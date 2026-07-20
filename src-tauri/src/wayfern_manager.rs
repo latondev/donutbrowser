@@ -563,8 +563,26 @@ impl WayfernManager {
         "windows"
       });
 
-    // Include wayfern token if available (enables cross-OS fingerprinting for paid users)
-    let wayfern_token = crate::cloud_auth::CLOUD_AUTH.get_wayfern_token().await;
+    // ponytail: local unlock — force host OS (no cross-OS) and skip wayfern
+    // token. The Wayfern binary verifies token signatures server-side, so
+    // cross-OS fingerprinting is unavailable without a real paid account.
+    // Forcing host OS lets fingerprint generation/refresh succeed.
+    let (os, wayfern_token) = if crate::cloud_auth::CLOUD_AUTH.is_local_unlock().await {
+      let host_os = if cfg!(target_os = "macos") {
+        "macos"
+      } else if cfg!(target_os = "linux") {
+        "linux"
+      } else {
+        "windows"
+      };
+      (host_os.to_string(), None)
+    } else {
+      (
+        os.to_string(),
+        crate::cloud_auth::CLOUD_AUTH.get_wayfern_token().await,
+      )
+    };
+
     let mut refresh_params = json!({ "operatingSystem": os });
     if let Some(ref token) = wayfern_token {
       refresh_params
@@ -884,18 +902,19 @@ impl WayfernManager {
     let profile_color = profile_color.trim().trim_start_matches('#');
     args.push(format!("--wayfern-profile-color={profile_color}"));
 
-    let mut wayfern_token = crate::cloud_auth::CLOUD_AUTH.get_wayfern_token().await;
+    let wayfern_token = crate::cloud_auth::CLOUD_AUTH.get_wayfern_token().await;
+    // ponytail: local dev/test override — skip the 3s wait loop for the
+    // cloud wayfern token, which never arrives without a paid cloud
+    // account. The browser launches fine without it; cross-OS
+    // fingerprinting just won't be enabled for the session. Restore the
+    // original polling loop below before shipping.
+    /*
+    let mut wayfern_token = wayfern_token;
     if wayfern_token.is_none()
       && crate::cloud_auth::CLOUD_AUTH
         .has_active_paid_subscription()
         .await
     {
-      // Brief wait for the background token fetch — when the API is healthy
-      // the token usually lands in well under a second. If api.donutbrowser.com
-      // is unreachable we don't want to gate the whole launch on it; the
-      // browser still works without the token (cross-OS fingerprinting just
-      // won't be enabled for this session, and the next launch will pick it
-      // up once the token arrives).
       log::info!("Wayfern token not ready for paid user, waiting briefly...");
       for _ in 0..3 {
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -910,6 +929,7 @@ impl WayfernManager {
         );
       }
     }
+    */
     if let Some(ref token) = wayfern_token {
       args.push(format!("--wayfern-token={token}"));
       log::info!("Wayfern token passed as CLI flag (length: {})", token.len());
@@ -1030,7 +1050,13 @@ impl WayfernManager {
       }
 
       // Include wayfern token if available (enables cross-OS fingerprinting for paid users)
-      let wayfern_token = crate::cloud_auth::CLOUD_AUTH.get_wayfern_token().await;
+      // ponytail: local unlock — skip token (server-side signature verification
+      // rejects fakes). Fingerprint still applies, just without cross-OS upgrade.
+      let wayfern_token = if crate::cloud_auth::CLOUD_AUTH.is_local_unlock().await {
+        None
+      } else {
+        crate::cloud_auth::CLOUD_AUTH.get_wayfern_token().await
+      };
       let mut fingerprint_params = fingerprint_for_cdp.clone();
       if let Some(ref token) = wayfern_token {
         if let Some(obj) = fingerprint_params.as_object_mut() {

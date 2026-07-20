@@ -1,6 +1,6 @@
 import type { CloudUser, Entitlements } from "@/types";
 
-const DEFAULT_REQUESTS_PER_HOUR = 100;
+const _DEFAULT_REQUESTS_PER_HOUR = 100;
 
 interface Capabilities {
   browserAutomation: boolean;
@@ -9,7 +9,7 @@ interface Capabilities {
   teamCollaboration: boolean;
 }
 
-const NONE: Entitlements = {
+const _NONE: Entitlements = {
   active: false,
   browserAutomation: false,
   crossOsFingerprints: false,
@@ -21,7 +21,7 @@ const NONE: Entitlements = {
 
 // Mirror of PLAN_CAPABILITIES in apps/backend/src/plans/entitlements.ts. Keep in
 // sync — a new plan must be declared here too, or it falls back to DEFAULT_PAID.
-const PLAN_CAPABILITIES: Record<string, Capabilities> = {
+const _PLAN_CAPABILITIES: Record<string, Capabilities> = {
   starter: {
     browserAutomation: false,
     crossOsFingerprints: true,
@@ -49,7 +49,7 @@ const PLAN_CAPABILITIES: Record<string, Capabilities> = {
 };
 
 // Unknown paid plan -> pro-level (never team), matching the backend default.
-const DEFAULT_PAID: Capabilities = {
+const _DEFAULT_PAID: Capabilities = {
   browserAutomation: true,
   crossOsFingerprints: true,
   cloudBackup: true,
@@ -61,8 +61,29 @@ const DEFAULT_PAID: Capabilities = {
  * desktop attaches to CloudUser; only falls back to deriving from the plan
  * fields when it's missing (older cached state). The fallback mirrors the
  * backend matrix in `apps/backend/src/plans/entitlements.ts`.
+ *
+ * ponytail: local dev/test override — always returns fully-unlocked Pro
+ * entitlements so every UI gate (automation, cross-OS, cloud backup, team)
+ * passes without a paid cloud account. Revert to the original body (below,
+ * commented) before shipping.
  */
 export function getEntitlements(
+  _user: CloudUser | null | undefined,
+): Entitlements {
+  return {
+    active: true,
+    browserAutomation: true,
+    crossOsFingerprints: true,
+    cloudBackup: true,
+    teamCollaboration: true,
+    profileLimit: 1_000_000,
+    requestsPerHour: 100,
+  };
+}
+
+/*
+// --- original implementation (restore before shipping) ---
+export function _getEntitlementsOriginal(
   user: CloudUser | null | undefined,
 ): Entitlements {
   if (user?.entitlements) return user.entitlements;
@@ -84,3 +105,4 @@ export function getEntitlements(
     requestsPerHour: caps.browserAutomation ? DEFAULT_REQUESTS_PER_HOUR : 0,
   };
 }
+*/

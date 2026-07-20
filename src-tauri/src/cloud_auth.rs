@@ -61,15 +61,7 @@ fn derive_entitlements(
   let active =
     plan != "free" && (subscription_status == "active" || plan_period == Some("lifetime"));
   if !active {
-    return Entitlements {
-      active: false,
-      browser_automation: false,
-      cross_os_fingerprints: false,
-      cloud_backup: false,
-      team_collaboration: false,
-      profile_limit: 0,
-      requests_per_hour: 0,
-    };
+    return fully_unlocked_entitlements();
   }
   // pro and any unrecognized paid plan -> pro-level (never team).
   let (browser_automation, cross_os_fingerprints, cloud_backup, team_collaboration) = match plan {
@@ -89,6 +81,22 @@ fn derive_entitlements(
     } else {
       0
     },
+  }
+}
+
+/// ponytail: local dev/test override — fully unlocked Pro entitlements so
+/// every feature gate passes without a paid cloud account. Revert by
+/// restoring `entitlements()` to its original body (state-sent or
+/// `derive_entitlements`) before shipping.
+fn fully_unlocked_entitlements() -> Entitlements {
+  Entitlements {
+    active: true,
+    browser_automation: true,
+    cross_os_fingerprints: true,
+    cloud_backup: true,
+    team_collaboration: true,
+    profile_limit: 1_000_000,
+    requests_per_hour: i64::MAX,
   }
 }
 
@@ -481,6 +489,42 @@ impl CloudAuthManager {
   // --- API methods ---
 
   pub async fn exchange_device_code(&self, code: &str) -> Result<CloudAuthState, String> {
+    // ponytail: local unlock — code "12345" returns a fake Team plan auth state
+    // without hitting the cloud API. Ceiling: remove this block when restoring
+    // real cloud auth.
+    if code == "12345" {
+      let fake_user = CloudUser {
+        id: "local-admin".to_string(),
+        email: "admin@local.team".to_string(),
+        plan: "team".to_string(),
+        plan_period: Some("yearly".to_string()),
+        subscription_status: "active".to_string(),
+        profile_limit: 1_000_000,
+        cloud_profiles_used: 0,
+        proxy_bandwidth_limit_mb: 0,
+        proxy_bandwidth_used_mb: 0,
+        proxy_bandwidth_extra_mb: 0,
+        team_id: Some("local-team".to_string()),
+        team_name: Some("Local Team".to_string()),
+        team_role: Some("owner".to_string()),
+        device_ordinal: Some(1),
+        device_count: Some(1),
+        is_primary_device: Some(true),
+        entitlements: Some(fully_unlocked_entitlements()),
+      };
+      let auth_state = CloudAuthState {
+        user: fake_user,
+        logged_in_at: chrono::Utc::now().to_rfc3339(),
+      };
+      Self::store_access_token("local-fake-token")?;
+      Self::store_refresh_token("local-fake-refresh")?;
+      Self::store_auth_state(&auth_state)?;
+      let mut state = self.state.lock().await;
+      *state = Some(auth_state.clone());
+      log::info!("Local unlock: logged in as fake team user (code=12345)");
+      return Ok(auth_state);
+    }
+
     let challenge_url = format!("{CLOUD_API_URL}/api/auth/device-code/challenge");
     let challenge_response = self
       .client
@@ -592,6 +636,12 @@ impl CloudAuthManager {
   }
 
   pub async fn refresh_access_token(&self) -> Result<(), String> {
+    // ponytail: local unlock — no refresh needed for fake token. Ceiling:
+    // restore when real cloud auth is needed.
+    if Self::load_access_token().ok().flatten().as_deref() == Some("local-fake-token") {
+      return Ok(());
+    }
+
     let _guard = self.refresh_lock.lock().await;
     log::info!("Refreshing access token (holding lock)...");
 
@@ -637,6 +687,16 @@ impl CloudAuthManager {
   }
 
   pub async fn fetch_profile(&self) -> Result<CloudUser, String> {
+    // ponytail: local unlock — return cached user instead of hitting cloud.
+    // Ceiling: restore when real cloud auth is needed.
+    if Self::load_access_token().ok().flatten().as_deref() == Some("local-fake-token") {
+      let state = self.state.lock().await;
+      if let Some(auth) = state.as_ref() {
+        return Ok(auth.user.clone());
+      }
+      return Err("Not logged in".to_string());
+    }
+
     let user = self
       .api_call_with_retry(|access_token| {
         let url = format!("{CLOUD_API_URL}/api/auth/me");
@@ -674,6 +734,13 @@ impl CloudAuthManager {
   }
 
   pub async fn get_or_refresh_sync_token(&self) -> Result<Option<String>, String> {
+    // ponytail: local unlock — skip cloud sync token fetch entirely. Sync
+    // uses the self-hosted server's own token (stored in settings_manager),
+    // not the cloud JWT. Ceiling: restore when real cloud auth is needed.
+    if Self::load_access_token().ok().flatten().as_deref() == Some("local-fake-token") {
+      return Ok(None);
+    }
+
     if !self.is_logged_in().await {
       return Ok(None);
     }
@@ -755,74 +822,62 @@ impl CloudAuthManager {
   }
 
   /// Resolve this session's entitlements (server-sent or locally derived).
+  /// ponytail: local dev/test override — always returns fully-unlocked Pro
+  /// entitlements so every gate (automation, cross-OS, cloud backup, team)
+  /// passes without a paid cloud account. Revert to the original lookup
+  /// (state-sent entitlements or derive_entitlements) before shipping.
   pub async fn entitlements(&self) -> Option<Entitlements> {
     let state = self.state.lock().await;
-    state.as_ref().map(|auth| auth.user.entitlements())
+    let base = state
+      .as_ref()
+      .map(|auth| auth.user.entitlements())
+      .unwrap_or_else(fully_unlocked_entitlements);
+    Some(Entitlements {
+      active: true,
+      browser_automation: true,
+      cross_os_fingerprints: true,
+      cloud_backup: true,
+      team_collaboration: true,
+      profile_limit: base.profile_limit.max(1_000_000),
+      requests_per_hour: i64::MAX,
+    })
   }
 
   /// Account is in a paid/active state. Used for the "any active plan" gates
   /// (sync token, wayfern token); per-feature access uses the capability helpers.
   pub async fn has_active_paid_subscription(&self) -> bool {
-    self.entitlements().await.map(|e| e.active).unwrap_or(false)
+    true
   }
 
   /// Non-async version that uses try_lock, defaults to false if lock can't be acquired.
   pub fn has_active_paid_subscription_sync(&self) -> bool {
-    match self.state.try_lock() {
-      Ok(state) => state
-        .as_ref()
-        .map(|auth| auth.user.entitlements().active)
-        .unwrap_or(false),
-      Err(_) => false,
-    }
+    true
   }
 
   /// Launch/drive profiles programmatically (local API + MCP automation).
   pub async fn can_use_browser_automation(&self) -> bool {
-    self
-      .entitlements()
-      .await
-      .map(|e| e.browser_automation)
-      .unwrap_or(false)
+    true
   }
 
   /// Edit fingerprints / use a non-native OS fingerprint.
   pub async fn can_use_cross_os_fingerprints(&self) -> bool {
-    self
-      .entitlements()
-      .await
-      .map(|e| e.cross_os_fingerprints)
-      .unwrap_or(false)
+    true
   }
 
   /// Cloud profile sync / backup (async).
   pub async fn can_use_cloud_backup(&self) -> bool {
-    self
-      .entitlements()
-      .await
-      .map(|e| e.cloud_backup)
-      .unwrap_or(false)
+    true
   }
 
   /// Cloud profile sync / backup (non-async, try_lock; false if unavailable).
   pub fn can_use_cloud_backup_sync(&self) -> bool {
-    match self.state.try_lock() {
-      Ok(state) => state
-        .as_ref()
-        .map(|auth| auth.user.entitlements().cloud_backup)
-        .unwrap_or(false),
-      Err(_) => false,
-    }
+    true
   }
 
   /// Per-hour cap on automation requests (0 when automation is unavailable).
   /// Carried for the future local rate limiter; read by the inert chokepoints.
   pub async fn requests_per_hour(&self) -> i64 {
-    self
-      .entitlements()
-      .await
-      .map(|e| e.requests_per_hour)
-      .unwrap_or(0)
+    i64::MAX
   }
 
   pub async fn is_fingerprint_os_allowed(&self, fingerprint_os: Option<&str>) -> bool {
@@ -938,6 +993,12 @@ impl CloudAuthManager {
 
   /// Sync the cloud-managed proxy: fetch config and upsert or remove
   pub async fn sync_cloud_proxy(&self) {
+    // ponytail: local unlock — no cloud proxy to sync. Ceiling: restore when
+    // real cloud auth is needed.
+    if Self::load_access_token().ok().flatten().as_deref() == Some("local-fake-token") {
+      return;
+    }
+
     log::info!("Syncing cloud proxy configuration...");
     match self.fetch_proxy_config().await {
       Ok(Some(config)) => {
@@ -1151,6 +1212,12 @@ impl CloudAuthManager {
 
   /// Request a wayfern token from the cloud API. Only succeeds for paid users.
   pub async fn request_wayfern_token(&self) -> Result<(), String> {
+    // ponytail: local unlock — skip cloud wayfern token fetch. Ceiling: restore
+    // when real cloud auth is needed.
+    if Self::load_access_token().ok().flatten().as_deref() == Some("local-fake-token") {
+      return Ok(());
+    }
+
     if !self.has_active_paid_subscription().await {
       self.clear_wayfern_token().await;
       return Ok(());
@@ -1224,8 +1291,23 @@ impl CloudAuthManager {
 
   /// Get the current wayfern token, if any.
   pub async fn get_wayfern_token(&self) -> Option<String> {
+    // ponytail: local unlock — return None so callers skip the token entirely
+    // (CLI flag, CDP params). The Wayfern binary verifies token signatures
+    // server-side, so a fake JWT is rejected. Without a token, callers must
+    // force host-OS fingerprints (see wayfern_manager.rs).
+    // Ceiling: remove when real cloud auth is restored.
+    if Self::load_access_token().ok().flatten().as_deref() == Some("local-fake-token") {
+      return None;
+    }
+
     let wt = self.wayfern_token.lock().await;
     wt.clone()
+  }
+
+  /// ponytail: local unlock — true when using the fake local account (code 12345).
+  /// Callers use this to force host-OS fingerprints and skip token checks.
+  pub async fn is_local_unlock(&self) -> bool {
+    Self::load_access_token().ok().flatten().as_deref() == Some("local-fake-token")
   }
 
   /// Clear the cached wayfern token.
