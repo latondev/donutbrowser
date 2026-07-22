@@ -521,11 +521,10 @@ impl WayfernManager {
     #[cfg(target_os = "windows")]
     cmd
       .arg("--no-sandbox")
-      .arg("--in-process-gpu")
+      .arg("--disable-gpu")
       .arg("--disable-gpu-compositing")
       .arg("--disable-3d-apis")
       .arg("--disable-gpu-shader-disk-cache")
-      .arg("--use-angle=swiftshader")
       .arg("--disable-features=DialMediaRouteProvider,Vulkan,UseDawn,SkiaGraphite,CanvasOopRasterization,RawDraw,RendererCodeIntegrity,WinSboxForceRendererCodeIntegrity,NetworkServiceCodeIntegrity");
 
     #[cfg(target_os = "linux")]
@@ -917,12 +916,10 @@ impl WayfernManager {
       // STATUS_ACCESS_DENIED (0xC0000022) under the default sandbox. Disabling
       // the sandbox entirely (same as the Linux path) eliminates the crash.
       args.push("--no-sandbox".to_string());
-      args.push("--in-process-gpu".to_string());
       args.push("--disable-gpu".to_string());
       args.push("--disable-gpu-compositing".to_string());
       args.push("--disable-3d-apis".to_string());
       args.push("--disable-gpu-shader-disk-cache".to_string());
-      args.push("--use-angle=swiftshader".to_string());
       args.push(
         "--disable-features=DialMediaRouteProvider,DnsOverHttps,AsyncDns,Prefetch,PrefetchProxy,SpeculationRulesPrefetchFuture,NoStatePrefetch,Vulkan,UseDawn,SkiaGraphite,CanvasOopRasterization,RawDraw,RendererCodeIntegrity,WinSboxForceRendererCodeIntegrity,NetworkServiceCodeIntegrity".to_string(),
       );
