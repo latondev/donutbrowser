@@ -62,3 +62,8 @@ nodecar/nodecar-bin
 
 # claude
 .claude/
+# Added by code-review-graph
+.code-review-graph/
+
+# pnpm store (local, should never be committed)
+.pnpm-store/

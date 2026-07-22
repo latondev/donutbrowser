@@ -40,11 +40,11 @@ if (TARGET === HOST_TARGET || TARGET === "unknown") {
 const destDir = join(MANIFEST_DIR, "binaries");
 mkdirSync(destDir, { recursive: true });
 
-function copyBinary(baseName) {
-  const binName = isWindows ? `${baseName}.exe` : baseName;
+function copyBinary(sourceBaseName, destBaseName = sourceBaseName) {
+  const binName = isWindows ? `${sourceBaseName}.exe` : sourceBaseName;
   const source = join(srcDir, binName);
 
-  let destName = `${baseName}-${TARGET}`;
+  let destName = `${destBaseName}-${TARGET}`;
   if (isWindows) destName += ".exe";
   const dest = join(destDir, destName);
 
@@ -53,9 +53,9 @@ function copyBinary(baseName) {
     console.log(`Copied ${binName} to ${dest}`);
   } else {
     console.log(`Warning: Binary not found at ${source}`);
-    console.log(`Building ${baseName} binary...`);
+    console.log(`Building ${sourceBaseName} binary...`);
 
-    const buildArgs = ["build", "--bin", baseName];
+    const buildArgs = ["build", "--bin", sourceBaseName];
     if (PROFILE === "release") buildArgs.push("--release");
     if (TARGET !== "unknown" && TARGET !== HOST_TARGET) {
       buildArgs.push("--target", TARGET);
@@ -70,10 +70,10 @@ function copyBinary(baseName) {
       copyFileSync(source, dest);
       console.log(`Built and copied ${binName} to ${dest}`);
     } else {
-      console.error(`Error: Failed to build ${baseName} binary`);
+      console.error(`Error: Failed to build ${sourceBaseName} binary`);
       process.exit(1);
     }
   }
 }
 
-copyBinary("donut-proxy");
+copyBinary("donut-proxy-worker", "donut-proxy");

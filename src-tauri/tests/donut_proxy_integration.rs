@@ -56,9 +56,9 @@ async fn setup_test() -> Result<std::path::PathBuf, Box<dyn std::error::Error + 
 
   // Build donut-proxy binary if it doesn't exist
   let proxy_binary_name = if cfg!(windows) {
-    "donut-proxy.exe"
+    "donut-proxy-worker.exe"
   } else {
-    "donut-proxy"
+    "donut-proxy-worker"
   };
   let proxy_binary = project_root
     .join("src-tauri")
@@ -69,7 +69,7 @@ async fn setup_test() -> Result<std::path::PathBuf, Box<dyn std::error::Error + 
   if !proxy_binary.exists() {
     println!("Building donut-proxy binary for integration tests...");
     let build_status = std::process::Command::new("cargo")
-      .args(["build", "--bin", "donut-proxy"])
+      .args(["build", "--bin", "donut-proxy-worker"])
       .current_dir(project_root.join("src-tauri"))
       .status()?;
 

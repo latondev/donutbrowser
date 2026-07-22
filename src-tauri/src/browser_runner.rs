@@ -6,7 +6,7 @@ use crate::profile::{BrowserProfile, ProfileManager};
 use crate::proxy_manager::PROXY_MANAGER;
 use crate::wayfern_manager::{WayfernConfig, WayfernManager};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub struct BrowserRunner {
@@ -17,6 +17,174 @@ pub struct BrowserRunner {
 }
 
 impl BrowserRunner {
+  #[cfg(target_os = "windows")]
+  fn cmd_matches_profile_path(cmd: &[std::ffi::OsString], profile_path: &str) -> bool {
+    let args: Vec<&str> = cmd.iter().filter_map(|a| a.to_str()).collect();
+    for (i, arg) in args.iter().enumerate() {
+      if *arg == profile_path {
+        return true;
+      }
+      if let Some(val) = arg.strip_prefix("--user-data-dir=") {
+        if val == profile_path {
+          return true;
+        }
+      }
+      if *arg == "--user-data-dir" && args.get(i + 1).is_some_and(|next| *next == profile_path) {
+        return true;
+      }
+    }
+
+    false
+  }
+
+  #[cfg(target_os = "windows")]
+  fn kill_stale_wayfern_processes_for_profile(profile_path: &str) {
+    use sysinfo::{ProcessRefreshKind, RefreshKind, System};
+
+    let system = System::new_with_specifics(
+      RefreshKind::nothing().with_processes(ProcessRefreshKind::everything()),
+    );
+    let mut killed = 0usize;
+
+    for (pid, process) in system.processes() {
+      let cmd = process.cmd();
+      if cmd.is_empty() || !Self::cmd_matches_profile_path(cmd, profile_path) {
+        continue;
+      }
+
+      let process_name = process.name().to_string_lossy().to_ascii_lowercase();
+      if !process_name.contains("chrome")
+        && !process_name.contains("wayfern")
+        && !process_name.contains("donut")
+      {
+        continue;
+      }
+
+      log::warn!(
+        "Killing stale Wayfern process {} for profile {} before relaunch",
+        pid.as_u32(),
+        profile_path
+      );
+      if process.kill() {
+        killed += 1;
+      }
+    }
+
+    if killed > 0 {
+      std::thread::sleep(Duration::from_millis(500));
+      log::warn!(
+        "Killed {} stale Wayfern process(es) for profile {} before relaunch",
+        killed,
+        profile_path
+      );
+    }
+  }
+
+  #[cfg(target_os = "windows")]
+  fn reset_wayfern_network_state_for_proxy(profile_path: &str) {
+    fn remove_path(path: &Path) -> bool {
+      if !path.exists() {
+        return false;
+      }
+
+      let result = if path.is_dir() {
+        std::fs::remove_dir_all(path)
+      } else {
+        std::fs::remove_file(path)
+      };
+
+      match result {
+        Ok(()) => true,
+        Err(e) => {
+          log::warn!(
+            "Failed to reset stale Wayfern state at {}: {}",
+            path.display(),
+            e
+          );
+          false
+        }
+      }
+    }
+
+    let root = Path::new(profile_path);
+    let targets = [
+      root.join("SingletonLock"),
+      root.join("SingletonCookie"),
+      root.join("SingletonSocket"),
+      root.join("Default").join("Cache"),
+      root.join("Default").join("Code Cache"),
+      root.join("Default").join("GPUCache"),
+      root.join("GPUPersistentCache"),
+      root.join("Default").join("DawnWebGPUCache"),
+      root.join("Default").join("DawnGraphiteCache"),
+      root
+        .join("Default")
+        .join("Service Worker")
+        .join("CacheStorage"),
+      root
+        .join("Default")
+        .join("Service Worker")
+        .join("ScriptCache"),
+      root.join("ShaderCache"),
+      root.join("GrShaderCache"),
+      root.join("GraphiteDawnCache"),
+      root.join("component_crx_cache"),
+      root.join("extensions_crx_cache"),
+    ];
+
+    let mut cleared = 0usize;
+    for path in targets {
+      if remove_path(&path) {
+        cleared += 1;
+      }
+    }
+
+    if cleared > 0 {
+      log::info!(
+        "Reset {} stale Chromium network/cache entries before proxied Wayfern launch for {}",
+        cleared,
+        profile_path
+      );
+    }
+  }
+
+  #[cfg(target_os = "windows")]
+  fn recreate_corrupt_wayfern_profile_data(profile_path: &str) -> Result<(), String> {
+    let path = Path::new(profile_path);
+    if path.exists() {
+      let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| format!("Failed to compute recovery timestamp: {e}"))?
+        .as_secs();
+      let backup = path.with_file_name(format!(
+        "{}.broken-{timestamp}",
+        path
+          .file_name()
+          .and_then(|name| name.to_str())
+          .unwrap_or("profile")
+      ));
+      std::fs::rename(path, &backup).map_err(|e| {
+        format!(
+          "Failed to backup corrupt Wayfern profile data from {} to {}: {e}",
+          path.display(),
+          backup.display()
+        )
+      })?;
+      log::warn!(
+        "Backed up corrupt Wayfern profile data from {} to {}",
+        path.display(),
+        backup.display()
+      );
+    }
+
+    std::fs::create_dir_all(path).map_err(|e| {
+      format!(
+        "Failed to recreate Wayfern profile data directory {}: {e}",
+        path.display()
+      )
+    })
+  }
+
   fn new() -> Self {
     Self {
       profile_manager: ProfileManager::instance(),
@@ -240,44 +408,12 @@ impl BrowserRunner {
         }
       }
 
-      log::info!(
-        "Starting local proxy for Wayfern profile: {} (upstream: {})",
-        profile.name,
-        upstream_proxy
-          .as_ref()
-          .map(|p| format!("{}:{}", p.host, p.port))
-          .unwrap_or_else(|| "DIRECT".to_string())
-      );
-
-      // Start the proxy and get local proxy settings
-      // If proxy startup fails, DO NOT launch Wayfern - it requires local proxy
       let profile_id_str = profile.id.to_string();
       let (blocklist_file, dns_allowlist_mode) = Self::resolve_blocklist_file(profile).await?;
-      // Unique per-launch key: a shared constant here would let concurrent
-      // launches overwrite each other's active_proxies entry, ending with one
-      // browser's worker tracked under another browser's PID.
-      let launch_placeholder_pid = crate::proxy_manager::next_launch_placeholder_pid();
-      let local_proxy = PROXY_MANAGER
-        .start_proxy(
-          app_handle.clone(),
-          upstream_proxy.as_ref(),
-          launch_placeholder_pid,
-          Some(&profile_id_str),
-          profile.proxy_bypass_rules.clone(),
-          blocklist_file,
-          dns_allowlist_mode,
-          // Wayfern (Chromium) uses a local SOCKS5 proxy so QUIC and WebRTC
-          // UDP can be routed through it (via SOCKS5 UDP ASSOCIATE) without
-          // leaking the real IP, rather than being forced direct as they
-          // would be over an HTTP CONNECT proxy.
-          "socks5",
-        )
-        .await
-        .map_err(|e| {
-          let error_msg = format!("Failed to start local proxy for Wayfern: {e}");
-          log::error!("{}", error_msg);
-          error_msg
-        })?;
+      let needs_local_proxy = upstream_proxy.is_some()
+        || blocklist_file.is_some()
+        || dns_allowlist_mode
+        || !profile.proxy_bypass_rules.is_empty();
 
       // If any step below fails before the browser is up, the detached worker
       // must be stopped here: its config never gets a browser_pid, so neither
@@ -306,28 +442,101 @@ impl BrowserRunner {
           }
         }
       }
-      let mut proxy_launch_guard = ProxyLaunchGuard {
-        app_handle: app_handle.clone(),
-        placeholder_pid: launch_placeholder_pid,
-        profile_name: profile.name.clone(),
-        armed: true,
-      };
 
-      // Format proxy URL for wayfern - use SOCKS5 for the local proxy so
-      // Chromium proxies UDP (QUIC/WebRTC), not just TCP.
-      let proxy_url = format!("socks5://{}:{}", local_proxy.host, local_proxy.port);
+      let mut proxy_launch_guard = None;
+      let mut launch_placeholder_pid = None;
+      if needs_local_proxy {
+        log::info!(
+          "Starting local proxy for Wayfern profile: {} (upstream: {})",
+          profile.name,
+          upstream_proxy
+            .as_ref()
+            .map(|p| format!("{}:{}", p.host, p.port))
+            .unwrap_or_else(|| "DIRECT".to_string())
+        );
 
-      // Set proxy in wayfern config
-      wayfern_config.proxy = Some(proxy_url);
+        // Unique per-launch key: a shared constant here would let concurrent
+        // launches overwrite each other's active_proxies entry, ending with one
+        // browser's worker tracked under another browser's PID.
+        let placeholder_pid = crate::proxy_manager::next_launch_placeholder_pid();
+        let local_protocol = {
+          #[cfg(target_os = "windows")]
+          {
+            match upstream_proxy.as_ref().map(|p| p.proxy_type.as_str()) {
+              // On Windows, Chromium/Wayfern has been flaky when we force the
+              // browser through a local SOCKS5 bridge whose upstream is itself an
+              // HTTP CONNECT proxy. For those upstream types, serve a local HTTP
+              // proxy instead and hand that directly to the browser.
+              Some("http") | Some("https") => "http",
+              _ => "socks5",
+            }
+          }
+          #[cfg(not(target_os = "windows"))]
+          {
+            "socks5"
+          }
+        };
 
-      log::info!(
-        "Configured local proxy for Wayfern: {:?}",
-        wayfern_config.proxy
-      );
+        let local_proxy = PROXY_MANAGER
+          .start_proxy(
+            app_handle.clone(),
+            upstream_proxy.as_ref(),
+            placeholder_pid,
+            Some(&profile_id_str),
+            profile.proxy_bypass_rules.clone(),
+            blocklist_file,
+            dns_allowlist_mode,
+            // Prefer a local SOCKS5 proxy so Chromium can proxy UDP
+            // (QUIC/WebRTC) without leaking. On Windows with an HTTP/HTTPS
+            // upstream, fall back to a local HTTP proxy to avoid the extra
+            // SOCKS5->HTTP bridge that has caused broken page loads there.
+            local_protocol,
+          )
+          .await
+          .map_err(|e| {
+            let error_msg = format!("Failed to start local proxy for Wayfern: {e}");
+            log::error!("{}", error_msg);
+            error_msg
+          })?;
+
+        let proxy_url = match local_protocol {
+          "http" => format!("http://{}:{}", local_proxy.host, local_proxy.port),
+          _ => format!("socks5://{}:{}", local_proxy.host, local_proxy.port),
+        };
+
+        // Set proxy in wayfern config
+        wayfern_config.proxy = Some(proxy_url);
+
+        log::info!(
+          "Configured local proxy for Wayfern: {:?}",
+          wayfern_config.proxy
+        );
+
+        launch_placeholder_pid = Some(placeholder_pid);
+        proxy_launch_guard = Some(ProxyLaunchGuard {
+          app_handle: app_handle.clone(),
+          placeholder_pid,
+          profile_name: profile.name.clone(),
+          armed: true,
+        });
+      } else {
+        wayfern_config.proxy = None;
+        log::info!(
+          "Launching Wayfern profile {} without local proxy (direct network)",
+          profile.name
+        );
+      }
 
       // Check if we need to generate a new fingerprint on every launch
       let mut updated_profile = profile.clone();
-      if wayfern_config.randomize_fingerprint_on_launch == Some(true) {
+      if cfg!(target_os = "windows") && wayfern_config.randomize_fingerprint_on_launch == Some(true)
+      {
+        log::warn!(
+          "Skipping Wayfern random fingerprint generation on Windows for profile {} because Wayfern 149 renderer is unstable with CDP fingerprints",
+          profile.name
+        );
+        wayfern_config.fingerprint = None;
+      } else if wayfern_config.randomize_fingerprint_on_launch == Some(true) {
         log::info!(
           "Generating random fingerprint for Wayfern profile: {}",
           profile.name
@@ -409,6 +618,12 @@ impl BrowserRunner {
         crate::ephemeral_dirs::get_effective_profile_path(&updated_profile, &profiles_dir);
       let profile_path_str = profile_data_path.to_string_lossy().to_string();
 
+      #[cfg(target_os = "windows")]
+      {
+        Self::kill_stale_wayfern_processes_for_profile(&profile_path_str);
+        Self::reset_wayfern_network_state_for_proxy(&profile_path_str);
+      }
+
       // Install extensions if an extension group is assigned
       let mut extension_paths = Vec::new();
       if updated_profile.extension_group_id.is_some() {
@@ -433,7 +648,7 @@ impl BrowserRunner {
       // Get proxy URL from config
       let proxy_url = wayfern_config.proxy.as_deref();
 
-      let wayfern_result = self
+      let wayfern_result = match self
         .wayfern_manager
         .launch_wayfern(
           &app_handle,
@@ -448,13 +663,61 @@ impl BrowserRunner {
           headless,
         )
         .await
-        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-          format!("Failed to launch Wayfern: {e}").into()
-        })?;
+      {
+        Ok(result) => result,
+        Err(e) => {
+          #[cfg(target_os = "windows")]
+          {
+            let err_msg = e.to_string();
+            if err_msg.contains("exited shortly after launch")
+              || err_msg.contains("CDP disappeared shortly after launch")
+            {
+              log::warn!(
+                "Wayfern launch failed for profile {} with likely corrupt profile data; recreating profile data and retrying once: {}",
+                profile.name,
+                err_msg
+              );
+              Self::recreate_corrupt_wayfern_profile_data(&profile_path_str).map_err(
+                |recovery_err| -> Box<dyn std::error::Error + Send + Sync> { recovery_err.into() },
+              )?;
+              Self::reset_wayfern_network_state_for_proxy(&profile_path_str);
+
+              self
+                .wayfern_manager
+                .launch_wayfern(
+                  &app_handle,
+                  &updated_profile,
+                  &profile_path_str,
+                  &wayfern_config,
+                  url.as_deref(),
+                  proxy_url,
+                  profile.ephemeral,
+                  &extension_paths,
+                  remote_debugging_port,
+                  headless,
+                )
+                .await
+                .map_err(|retry_err| -> Box<dyn std::error::Error + Send + Sync> {
+                  format!("Failed to launch Wayfern after recreating profile data: {retry_err}")
+                    .into()
+                })?
+            } else {
+              return Err(format!("Failed to launch Wayfern: {e}").into());
+            }
+          }
+
+          #[cfg(not(target_os = "windows"))]
+          {
+            return Err(format!("Failed to launch Wayfern: {e}").into());
+          }
+        }
+      };
 
       // Browser is up and using the worker — failures past this point must
       // not stop it.
-      proxy_launch_guard.armed = false;
+      if let Some(guard) = proxy_launch_guard.as_mut() {
+        guard.armed = false;
+      }
 
       // Get the process ID from launch result
       let process_id = wayfern_result.processId.unwrap_or(0);
@@ -486,19 +749,21 @@ impl BrowserRunner {
       // reported no PID, keep the entry keyed by its unique placeholder (which
       // the cleanup sweep skips) rather than remapping to a shared 0 key that
       // concurrent launches could collide on.
-      if process_id != 0 {
-        if let Err(e) = PROXY_MANAGER.update_proxy_pid(launch_placeholder_pid, process_id) {
-          log::warn!("Warning: Failed to update proxy PID mapping: {e}");
-        } else {
-          log::info!(
-            "Updated proxy PID mapping from launch placeholder {launch_placeholder_pid} to actual PID: {process_id}"
-          );
+      if let Some(placeholder_pid) = launch_placeholder_pid {
+        if process_id != 0 {
+          if let Err(e) = PROXY_MANAGER.update_proxy_pid(placeholder_pid, process_id) {
+            log::warn!("Warning: Failed to update proxy PID mapping: {e}");
+          } else {
+            log::info!(
+              "Updated proxy PID mapping from launch placeholder {placeholder_pid} to actual PID: {process_id}"
+            );
+          }
         }
-      }
 
-      // Persist the real browser PID so the detached proxy worker self-reaps
-      // when this browser dies, even after the GUI exits/restarts.
-      PROXY_MANAGER.set_browser_pid_for_profile(&updated_profile.id.to_string(), process_id);
+        // Persist the real browser PID so the detached proxy worker self-reaps
+        // when this browser dies, even after the GUI exits/restarts.
+        PROXY_MANAGER.set_browser_pid_for_profile(&updated_profile.id.to_string(), process_id);
+      }
 
       // Save the updated profile
       log::info!(

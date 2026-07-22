@@ -21,7 +21,7 @@ name = "donutbrowser"
 path = "src/main.rs"
 
 [[bin]]
-name = "donut-proxy"
+name = "donut-proxy-worker"
 path = "src/bin/proxy_server.rs"
 
 [build-dependencies]

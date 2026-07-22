@@ -448,9 +448,9 @@ async fn ensure_donut_proxy_binary() -> Result<PathBuf, Box<dyn std::error::Erro
     .to_path_buf();
 
   let proxy_binary_name = if cfg!(windows) {
-    "donut-proxy.exe"
+    "donut-proxy-worker.exe"
   } else {
-    "donut-proxy"
+    "donut-proxy-worker"
   };
   let proxy_binary = project_root
     .join("src-tauri")
@@ -460,7 +460,7 @@ async fn ensure_donut_proxy_binary() -> Result<PathBuf, Box<dyn std::error::Erro
 
   if !proxy_binary.exists() {
     let build_status = tokio::process::Command::new("cargo")
-      .args(["build", "--bin", "donut-proxy"])
+      .args(["build", "--bin", "donut-proxy-worker"])
       .current_dir(project_root.join("src-tauri"))
       .status()
       .await?;

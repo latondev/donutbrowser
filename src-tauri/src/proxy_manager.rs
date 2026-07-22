@@ -1,16 +1,15 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri_plugin_shell::ShellExt;
 
 use crate::browser::ProxySettings;
 use crate::events;
 use crate::ip_utils;
+use crate::proxy_runner::{start_proxy_process_with_profile, stop_proxy_process};
 
 // Export data format for JSON export
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1516,7 +1515,7 @@ impl ProxyManager {
   #[allow(clippy::too_many_arguments)]
   pub async fn start_proxy(
     &self,
-    app_handle: tauri::AppHandle,
+    _app_handle: tauri::AppHandle,
     proxy_settings: Option<&ProxySettings>,
     browser_pid: u32,
     profile_id: Option<&str>,
@@ -1614,91 +1613,34 @@ impl ProxyManager {
       }
     }
 
-    // Start a new proxy using the donut-proxy binary with the correct CLI interface
-    let mut proxy_cmd = app_handle
-      .shell()
-      .sidecar("donut-proxy")
-      .map_err(|e| format!("Failed to create sidecar: {e}"))?
-      .arg("proxy")
-      .arg("start");
+    let upstream_url = proxy_settings.map(Self::build_proxy_url);
+    let proxy_config = start_proxy_process_with_profile(
+      upstream_url,
+      None,
+      profile_id.map(str::to_string),
+      bypass_rules,
+      blocklist_file.clone(),
+      dns_allowlist_mode,
+      Some(local_protocol.to_string()),
+    )
+    .await
+    .map_err(|e| format!("Failed to start proxy worker: {e}"))?;
 
-    // Add upstream proxy settings if provided, otherwise create direct proxy
-    if let Some(proxy_settings) = proxy_settings {
-      proxy_cmd = proxy_cmd
-        .arg("--host")
-        .arg(&proxy_settings.host)
-        .arg("--proxy-port")
-        .arg(proxy_settings.port.to_string())
-        .arg("--type")
-        .arg(&proxy_settings.proxy_type);
-
-      // Add credentials if provided
-      if let Some(username) = &proxy_settings.username {
-        proxy_cmd = proxy_cmd.arg("--username").arg(username);
-      }
-      if let Some(password) = &proxy_settings.password {
-        proxy_cmd = proxy_cmd.arg("--password").arg(password);
-      }
-    }
-
-    // Add profile ID if provided for traffic tracking
-    if let Some(id) = profile_id {
-      proxy_cmd = proxy_cmd.arg("--profile-id").arg(id);
-    }
-
-    // Add bypass rules if any
-    if !bypass_rules.is_empty() {
-      let rules_json = serde_json::to_string(&bypass_rules)
-        .map_err(|e| format!("Failed to serialize bypass rules: {e}"))?;
-      proxy_cmd = proxy_cmd.arg("--bypass-rules").arg(rules_json);
-    }
-
-    // Add blocklist file path if provided
-    if let Some(ref path) = blocklist_file {
-      proxy_cmd = proxy_cmd.arg("--blocklist-file").arg(path);
-      if dns_allowlist_mode {
-        proxy_cmd = proxy_cmd.arg("--dns-allowlist-mode");
-      }
-    }
-
-    // Tell the worker which protocol to serve the browser (http or socks5)
-    proxy_cmd = proxy_cmd.arg("--local-protocol").arg(local_protocol);
-
-    // Execute the command and wait for it to complete
-    // The donut-proxy binary should start the worker and then exit
-    let output = proxy_cmd
-      .output()
-      .await
-      .map_err(|e| format!("Failed to execute donut-proxy: {e}"))?;
-
-    if !output.status.success() {
-      let stderr = String::from_utf8_lossy(&output.stderr);
-      let stdout = String::from_utf8_lossy(&output.stdout);
-      return Err(format!(
-        "Proxy start failed - stdout: {stdout}, stderr: {stderr}"
-      ));
-    }
-
-    let json_string =
-      String::from_utf8(output.stdout).map_err(|e| format!("Failed to parse proxy output: {e}"))?;
-
-    // Parse the JSON output
-    let json: Value = serde_json::from_str(json_string.trim())
-      .map_err(|e| format!("Failed to parse JSON: {e}. Output was: {}", json_string))?;
-
-    // Extract proxy information
-    let id = json["id"].as_str().ok_or("Missing proxy ID")?;
-    let local_port = json["localPort"]
-      .as_u64()
-      .ok_or_else(|| format!("Missing local port in JSON: {}", json_string))?
-      as u16;
-    let local_url = json["localUrl"]
-      .as_str()
-      .ok_or_else(|| format!("Missing local URL in JSON: {}", json_string))?
-      .to_string();
+    let local_port = proxy_config.local_port.ok_or_else(|| {
+      format!(
+        "Proxy worker {} did not publish a local port",
+        proxy_config.id
+      )
+    })?;
+    let local_url = proxy_config.local_url.clone().ok_or_else(|| {
+      format!(
+        "Proxy worker {} did not publish a local URL",
+        proxy_config.id
+      )
+    })?;
 
     let proxy_info = ProxyInfo {
-      id: id.to_string(),
+      id: proxy_config.id.clone(),
       local_url,
       upstream_host: proxy_settings
         .map(|p| p.host.clone())
@@ -1732,7 +1674,7 @@ impl ProxyManager {
         // The detached worker is already running with its config on disk, but
         // it was never registered in active_proxies — no cleanup pass could
         // ever find it, so it must be killed before this error propagates.
-        let _ = crate::proxy_runner::stop_proxy_process(&proxy_info.id).await;
+        let _ = stop_proxy_process(&proxy_info.id).await;
         return Err(format!(
           "Local proxy on 127.0.0.1:{} did not become ready in time",
           proxy_info.local_port
@@ -1770,7 +1712,7 @@ impl ProxyManager {
   // Stop the proxy associated with a browser process ID
   pub async fn stop_proxy(
     &self,
-    app_handle: tauri::AppHandle,
+    _app_handle: tauri::AppHandle,
     browser_pid: u32,
   ) -> Result<(), String> {
     let (proxy_id, profile_id): (String, Option<String>) = {
@@ -1781,28 +1723,12 @@ impl ProxyManager {
       }
     };
 
-    // Stop the proxy using the donut-proxy binary
-    let proxy_cmd = app_handle
-      .shell()
-      .sidecar("donut-proxy")
-      .map_err(|e| format!("Failed to create sidecar: {e}"))?
-      .arg("proxy")
-      .arg("stop")
-      .arg("--id")
-      .arg(&proxy_id);
-
-    // A failed spawn (sidecar missing, permission denied, fd exhaustion) must
-    // not panic the cleanup task — the proxy is already removed from tracking,
-    // so degrade gracefully like the non-success branch below.
-    match proxy_cmd.output().await {
-      Ok(output) if !output.status.success() => {
-        log::warn!(
-          "Proxy stop error: {}",
-          String::from_utf8_lossy(&output.stderr)
-        );
-      }
-      Ok(_) => {}
-      Err(e) => log::warn!("Failed to run donut-proxy stop: {e}"),
+    // A failed stop must not panic the cleanup task — the proxy is already
+    // removed from tracking, so degrade gracefully if the worker is already gone.
+    match stop_proxy_process(&proxy_id).await {
+      Ok(false) => log::warn!("Proxy stop requested for {proxy_id}, but no worker was found"),
+      Ok(true) => {}
+      Err(e) => log::warn!("Failed to stop proxy worker {proxy_id}: {e}"),
     }
 
     // Clear profile-to-proxy mapping if it references this proxy
@@ -1826,7 +1752,7 @@ impl ProxyManager {
   // Stop the proxy associated with a profile ID
   pub async fn stop_proxy_by_profile_id(
     &self,
-    app_handle: tauri::AppHandle,
+    _app_handle: tauri::AppHandle,
     profile_id: &str,
   ) -> Result<(), String> {
     // Find the proxy ID for this profile
@@ -1850,28 +1776,15 @@ impl ProxyManager {
 
       if let Some(pid) = pid {
         // Use the existing stop_proxy method
-        self.stop_proxy(app_handle, pid).await
+        self.stop_proxy(_app_handle, pid).await
       } else {
-        // Proxy not found in active_proxies, try to stop it directly by ID
-        let proxy_cmd = app_handle
-          .shell()
-          .sidecar("donut-proxy")
-          .map_err(|e| format!("Failed to create sidecar: {e}"))?
-          .arg("proxy")
-          .arg("stop")
-          .arg("--id")
-          .arg(&proxy_id);
-
-        // Don't panic if the sidecar can't be spawned — still clear the mapping.
-        match proxy_cmd.output().await {
-          Ok(output) if !output.status.success() => {
-            log::warn!(
-              "Proxy stop error: {}",
-              String::from_utf8_lossy(&output.stderr)
-            );
+        // Don't panic if the worker is already gone — still clear the mapping.
+        match stop_proxy_process(&proxy_id).await {
+          Ok(false) => {
+            log::warn!("Proxy stop requested for {proxy_id}, but no worker was found")
           }
-          Ok(_) => {}
-          Err(e) => log::warn!("Failed to run donut-proxy stop: {e}"),
+          Ok(true) => {}
+          Err(e) => log::warn!("Failed to stop proxy worker {proxy_id}: {e}"),
         }
 
         // Clear profile-to-proxy mapping
@@ -2306,9 +2219,9 @@ mod tests {
       .unwrap()
       .to_path_buf();
     let proxy_binary_name = if cfg!(windows) {
-      "donut-proxy.exe"
+      "donut-proxy-worker.exe"
     } else {
-      "donut-proxy"
+      "donut-proxy-worker"
     };
     let proxy_binary = project_root
       .join("src-tauri")
@@ -2325,7 +2238,7 @@ mod tests {
     println!("Building donut-proxy binary for tests...");
 
     let build_status = Command::new("cargo")
-      .args(["build", "--bin", "donut-proxy"])
+      .args(["build", "--bin", "donut-proxy-worker"])
       .current_dir(project_root.join("src-tauri"))
       .status()
       .await?;

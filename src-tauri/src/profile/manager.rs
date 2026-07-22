@@ -183,55 +183,69 @@ impl ProfileManager {
 
       // Generate fingerprint if not already provided
       if config.fingerprint.is_none() {
-        log::info!("Generating fingerprint for Wayfern profile: {name}");
+        if cfg!(target_os = "windows") {
+          geolocation_applied = false;
+          log::warn!(
+            "Creating Wayfern profile {name} without a generated fingerprint on Windows because Wayfern 149 renderer is unstable with CDP fingerprints"
+          );
+        } else {
+          log::info!("Generating fingerprint for Wayfern profile: {name}");
 
-        // Create a temporary profile for fingerprint generation
-        let temp_profile = BrowserProfile {
-          id: uuid::Uuid::new_v4(),
-          name: name.to_string(),
-          browser: browser.to_string(),
-          version: version.to_string(),
-          proxy_id: proxy_id.clone(),
-          vpn_id: None,
-          launch_hook: launch_hook.clone(),
-          process_id: None,
-          last_launch: None,
-          release_type: release_type.to_string(),
-          wayfern_config: None,
-          group_id: group_id.clone(),
-          tags: Vec::new(),
-          note: None,
-          window_color: None,
-          sync_mode: SyncMode::Disabled,
-          encryption_salt: None,
-          last_sync: None,
-          host_os: None,
-          ephemeral: false,
-          extension_group_id: None,
-          proxy_bypass_rules: Vec::new(),
-          created_by_id: None,
-          created_by_email: None,
-          dns_blocklist: None,
-          password_protected: false,
-          clear_on_close: false,
-          created_at: None,
-          updated_at: None,
-        };
+          // Create a temporary profile for fingerprint generation
+          let temp_profile = BrowserProfile {
+            id: uuid::Uuid::new_v4(),
+            name: name.to_string(),
+            browser: browser.to_string(),
+            version: version.to_string(),
+            proxy_id: proxy_id.clone(),
+            vpn_id: None,
+            launch_hook: launch_hook.clone(),
+            process_id: None,
+            last_launch: None,
+            release_type: release_type.to_string(),
+            wayfern_config: None,
+            group_id: group_id.clone(),
+            tags: Vec::new(),
+            note: None,
+            window_color: None,
+            sync_mode: SyncMode::Disabled,
+            encryption_salt: None,
+            last_sync: None,
+            host_os: None,
+            ephemeral: false,
+            extension_group_id: None,
+            proxy_bypass_rules: Vec::new(),
+            created_by_id: None,
+            created_by_email: None,
+            dns_blocklist: None,
+            password_protected: false,
+            clear_on_close: false,
+            created_at: None,
+            updated_at: None,
+          };
 
-        match self
-          .wayfern_manager
-          .generate_fingerprint_config(app_handle, &temp_profile, &config)
-          .await
-        {
-          Ok((generated_fingerprint, geo_applied)) => {
-            config.fingerprint = Some(generated_fingerprint);
-            geolocation_applied = geo_applied;
-            log::info!("Successfully generated fingerprint for Wayfern profile: {name}");
-          }
-          Err(e) => {
-            return Err(
-              format!("Failed to generate fingerprint for Wayfern profile '{name}': {e}").into(),
-            );
+          match self
+            .wayfern_manager
+            .generate_fingerprint_config(app_handle, &temp_profile, &config)
+            .await
+          {
+            Ok((generated_fingerprint, geo_applied)) => {
+              config.fingerprint = Some(generated_fingerprint);
+              geolocation_applied = geo_applied;
+              log::info!("Successfully generated fingerprint for Wayfern profile: {name}");
+            }
+            Err(e) => {
+              if crate::wayfern_manager::WayfernManager::should_fallback_without_fingerprint(&*e) {
+                log::warn!(
+                  "Wayfern fingerprint generation failed for profile {name}; creating the profile without a fingerprint on Windows fallback path: {e}"
+                );
+              } else {
+                return Err(
+                  format!("Failed to generate fingerprint for Wayfern profile '{name}': {e}")
+                    .into(),
+                );
+              }
+            }
           }
         }
       } else {

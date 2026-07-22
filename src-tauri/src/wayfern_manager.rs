@@ -91,6 +91,20 @@ struct CdpTarget {
 }
 
 impl WayfernManager {
+  pub fn should_fallback_without_fingerprint(err: &(dyn std::error::Error + 'static)) -> bool {
+    if !cfg!(target_os = "windows") {
+      return false;
+    }
+
+    let msg = err.to_string().to_lowercase();
+    msg.contains("failed to refresh fingerprint")
+      || msg.contains("actively refused")
+      || msg.contains("os error 10061")
+      || msg.contains("cdp not ready")
+      || msg.contains("gpu process isn't usable")
+      || msg.contains("no response received from cdp")
+  }
+
   fn new() -> Self {
     Self {
       inner: Arc::new(AsyncMutex::new(WayfernManagerInner {
@@ -146,6 +160,37 @@ impl WayfernManager {
     // - webglParameters, webgl2Parameters, etc. are JSON strings
     // So no conversion is needed
     fingerprint
+  }
+
+  fn strip_windows_crash_prone_fingerprint_fields(fingerprint: &mut serde_json::Value) {
+    let Some(obj) = fingerprint.as_object_mut() else {
+      return;
+    };
+
+    // Wayfern 149 on Windows can renderer-crash while serializing WebGL/audio
+    // fingerprint payloads that contain sentinel numeric values. Keep the
+    // stable identity/location fields and let Chromium report these surfaces.
+    let crash_prone_keys = [
+      "audioBaseLatency",
+      "audioCodecs",
+      "audioMaxChannelCount",
+      "audioOutputLatency",
+      "audioSampleRate",
+      "hdrSupport",
+      "videoCodecs",
+      "webglParameters",
+      "webgl2Parameters",
+      "webglShaderPrecisionFormats",
+      "webgl2ShaderPrecisionFormats",
+      "webglRenderer",
+      "webglVendor",
+      "webglVersion",
+      "webglShadingLanguageVersion",
+    ];
+
+    for key in crash_prone_keys {
+      obj.remove(key);
+    }
   }
 
   /// Derive the on-screen window size Chromium should open at, from the stored
@@ -231,6 +276,14 @@ impl WayfernManager {
     let resp = self.http_client.get(&url).send().await?;
     let targets: Vec<CdpTarget> = resp.json().await?;
     Ok(targets)
+  }
+
+  fn is_process_running(pid: u32) -> bool {
+    sysinfo::System::new_with_specifics(
+      sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
+    )
+    .process(sysinfo::Pid::from(pid as usize))
+    .is_some()
   }
 
   async fn send_cdp_command(
@@ -460,9 +513,20 @@ impl WayfernManager {
       .arg("--no-first-run")
       .arg("--no-default-browser-check")
       .arg("--disable-background-mode")
+      .arg("--disable-quic")
       .arg("--use-mock-keychain")
       .arg("--password-store=basic")
       .arg("--disable-features=DialMediaRouteProvider");
+
+    #[cfg(target_os = "windows")]
+    cmd
+      .arg("--no-sandbox")
+      .arg("--in-process-gpu")
+      .arg("--disable-gpu-compositing")
+      .arg("--disable-3d-apis")
+      .arg("--disable-gpu-shader-disk-cache")
+      .arg("--use-angle=swiftshader")
+      .arg("--disable-features=DialMediaRouteProvider,Vulkan,UseDawn,SkiaGraphite,CanvasOopRasterization,RawDraw,RendererCodeIntegrity,WinSboxForceRendererCodeIntegrity,NetworkServiceCodeIntegrity");
 
     #[cfg(target_os = "linux")]
     cmd
@@ -834,6 +898,7 @@ impl WayfernManager {
       "--disable-updater".to_string(),
       "--disable-session-crashed-bubble".to_string(),
       "--hide-crash-restore-bubble".to_string(),
+      "--disable-quic".to_string(),
       "--disable-infobars".to_string(),
       // Prefetch* / NoStatePrefetch: cross-site Speculation-Rules prefetch uses
       // an isolated NetworkContext that defaults to DIRECT egress (real host IP
@@ -843,7 +908,25 @@ impl WayfernManager {
       "--disable-features=DialMediaRouteProvider,DnsOverHttps,AsyncDns,Prefetch,PrefetchProxy,SpeculationRulesPrefetchFuture,NoStatePrefetch".to_string(),
       "--use-mock-keychain".to_string(),
       "--password-store=basic".to_string(),
+      "--disable-gpu-sandbox".to_string(),
     ];
+
+    #[cfg(target_os = "windows")]
+    {
+      // Wayfern 149 on this Windows host crashes renderer/GPU subprocesses with
+      // STATUS_ACCESS_DENIED (0xC0000022) under the default sandbox. Disabling
+      // the sandbox entirely (same as the Linux path) eliminates the crash.
+      args.push("--no-sandbox".to_string());
+      args.push("--in-process-gpu".to_string());
+      args.push("--disable-gpu".to_string());
+      args.push("--disable-gpu-compositing".to_string());
+      args.push("--disable-3d-apis".to_string());
+      args.push("--disable-gpu-shader-disk-cache".to_string());
+      args.push("--use-angle=swiftshader".to_string());
+      args.push(
+        "--disable-features=DialMediaRouteProvider,DnsOverHttps,AsyncDns,Prefetch,PrefetchProxy,SpeculationRulesPrefetchFuture,NoStatePrefetch,Vulkan,UseDawn,SkiaGraphite,CanvasOopRasterization,RawDraw,RendererCodeIntegrity,WinSboxForceRendererCodeIntegrity,NetworkServiceCodeIntegrity".to_string(),
+      );
+    }
 
     if headless {
       args.push("--headless=new".to_string());
@@ -879,6 +962,18 @@ impl WayfernManager {
     if !extension_paths.is_empty() {
       args.push(format!("--load-extension={}", extension_paths.join(",")));
     }
+
+    // On Windows, Wayfern's internal pages (first chrome://newtab/, then even
+    // about:blank) have been the consistent source of STATUS_ACCESS_DENIED
+    // renderer failures in sessions whose proxied network traffic is otherwise
+    // healthy. Start on a real web page when the caller didn't request a URL
+    // so launch never depends on an internal Chromium page there.
+    #[cfg(target_os = "windows")]
+    let startup_url = url.unwrap_or("https://duckduckgo.com/");
+
+    #[cfg(not(target_os = "windows"))]
+    let startup_url = url.unwrap_or("about:blank");
+    args.push(startup_url.to_string());
 
     // Per-profile window label + distinct frame color so concurrent profile
     // windows are easy to tell apart. Wayfern reads these in
@@ -947,32 +1042,54 @@ impl WayfernManager {
     }
 
     if let Some(proxy) = proxy_url {
-      // Map the local proxy scheme to the matching PAC directive. SOCKS5 lets
-      // Chromium route UDP (QUIC/WebRTC) and resolve DNS through the proxy;
-      // PROXY is HTTP CONNECT (TCP only). The host:port is the same either way.
-      let (pac_directive, host_port) = if let Some(rest) = proxy.strip_prefix("socks5://") {
-        ("SOCKS5", rest)
-      } else {
-        (
-          "PROXY",
-          proxy
-            .trim_start_matches("http://")
-            .trim_start_matches("https://"),
-        )
-      };
-      let pac_data = format!(
-        "data:application/x-ns-proxy-autoconfig,function FindProxyForURL(url,host){{return \"{pac_directive} {host_port}\";}}",
-      );
-      args.push(format!("--proxy-pac-url={pac_data}"));
+      // On Windows, newer Wayfern/Chromium builds have been observed to crash
+      // early with STATUS_ACCESS_DENIED when the per-profile loopback proxy is
+      // injected via a PAC data URL. Pass the local loopback proxy directly via
+      // --proxy-server there instead. The Wayfern launch path always hands us a
+      // fully formed local proxy URL (currently SOCKS5 for Chromium profiles),
+      // so this keeps the same routing without relying on PAC parsing.
+      #[cfg(target_os = "windows")]
+      {
+        args.push(format!("--proxy-server={proxy}"));
+      }
+
+      #[cfg(not(target_os = "windows"))]
+      {
+        // Map the local proxy scheme to the matching PAC directive. SOCKS5 lets
+        // Chromium route UDP (QUIC/WebRTC) and resolve DNS through the proxy;
+        // PROXY is HTTP CONNECT (TCP only). The host:port is the same either way.
+        let (pac_directive, host_port) = if let Some(rest) = proxy.strip_prefix("socks5://") {
+          ("SOCKS5", rest)
+        } else {
+          (
+            "PROXY",
+            proxy
+              .trim_start_matches("http://")
+              .trim_start_matches("https://"),
+          )
+        };
+        let pac_data = format!(
+          "data:application/x-ns-proxy-autoconfig,function FindProxyForURL(url,host){{return \"{pac_directive} {host_port}\";}}",
+        );
+        args.push(format!("--proxy-pac-url={pac_data}"));
+      }
+
       args.push("--dns-prefetch-disable".to_string());
     }
 
+    let stderr_path = std::env::temp_dir().join(format!("wayfern_stderr_{port}.log"));
+    let stderr_file = std::fs::File::create(&stderr_path).ok();
     let mut command = TokioCommand::new(&executable_path);
     command
       .args(&args)
       .stdin(Stdio::null())
-      .stdout(Stdio::null())
-      .stderr(Stdio::null());
+      .stdout(Stdio::null());
+    if let Some(f) = stderr_file {
+      command.stderr(std::process::Stdio::from(f));
+      log::info!("Wayfern stderr captured to {}", stderr_path.display());
+    } else {
+      command.stderr(Stdio::null());
+    }
 
     let child = command
       .spawn()
@@ -1004,109 +1121,120 @@ impl WayfernManager {
         fingerprint_json.len()
       );
 
-      let stored_value: serde_json::Value = serde_json::from_str(fingerprint_json)
-        .map_err(|e| format!("Failed to parse stored fingerprint JSON: {e}"))?;
-
-      // The stored fingerprint should be the fingerprint object directly (after our fix in generate_fingerprint_config)
-      // But for backwards compatibility, also handle the wrapped format
-      let mut fingerprint = if stored_value.get("fingerprint").is_some() {
-        // Old format: {"fingerprint": {...}} - extract the inner fingerprint
-        stored_value.get("fingerprint").cloned().unwrap()
-      } else {
-        // New format: fingerprint object directly {...}
-        stored_value.clone()
-      };
-
-      // Add default timezone if not present (for profiles created before timezone was added)
-      if let Some(obj) = fingerprint.as_object_mut() {
-        if !obj.contains_key("timezone") {
-          obj.insert("timezone".to_string(), json!("America/New_York"));
-          log::info!("Added default timezone to fingerprint");
-        }
-        if !obj.contains_key("timezoneOffset") {
-          obj.insert("timezoneOffset".to_string(), json!(300));
-          log::info!("Added default timezoneOffset to fingerprint");
-        }
-      }
-
-      // Denormalize fingerprint for Wayfern CDP (convert arrays/objects to JSON strings)
-      let mut fingerprint_for_cdp = Self::denormalize_fingerprint(fingerprint);
-
-      // Normalize languages: if it's a comma-separated string, convert to array
-      if let Some(obj) = fingerprint_for_cdp.as_object_mut() {
-        if let Some(serde_json::Value::String(s)) = obj.get("languages").cloned() {
-          let arr: Vec<&str> = s.split(',').map(|l| l.trim()).collect();
-          obj.insert("languages".to_string(), json!(arr));
-        }
-      }
-
-      log::info!(
-        "Fingerprint prepared for CDP command, fields: {:?}",
-        fingerprint_for_cdp
-          .as_object()
-          .map(|o| o.keys().collect::<Vec<_>>())
-      );
-
-      // Log timezone and geolocation fields specifically for debugging
-      if let Some(obj) = fingerprint_for_cdp.as_object() {
-        log::info!(
-          "Timezone/Geolocation fields - timezone: {:?}, timezoneOffset: {:?}, latitude: {:?}, longitude: {:?}, language: {:?}, languages: {:?}",
-          obj.get("timezone"),
-          obj.get("timezoneOffset"),
-          obj.get("latitude"),
-          obj.get("longitude"),
-          obj.get("language"),
-          obj.get("languages")
+      if cfg!(target_os = "windows") {
+        log::warn!(
+          "Skipping Wayfern.setFingerprint on Windows because Wayfern 149 renderer is unstable with CDP fingerprints"
         );
-      }
-
-      // Include wayfern token if available (enables cross-OS fingerprinting for paid users)
-      // ponytail: local unlock — skip token (server-side signature verification
-      // rejects fakes). Fingerprint still applies, just without cross-OS upgrade.
-      let wayfern_token = if crate::cloud_auth::CLOUD_AUTH.is_local_unlock().await {
-        None
       } else {
-        crate::cloud_auth::CLOUD_AUTH.get_wayfern_token().await
-      };
-      let mut fingerprint_params = fingerprint_for_cdp.clone();
-      if let Some(ref token) = wayfern_token {
-        if let Some(obj) = fingerprint_params.as_object_mut() {
-          obj.insert("wayfernToken".to_string(), json!(token));
-        }
-      }
+        let stored_value: serde_json::Value = serde_json::from_str(fingerprint_json)
+          .map_err(|e| format!("Failed to parse stored fingerprint JSON: {e}"))?;
 
-      for target in &page_targets {
-        if let Some(ws_url) = &target.websocket_debugger_url {
-          log::info!("Applying fingerprint to target via WebSocket: {}", ws_url);
-          match self
-            .send_cdp_command(ws_url, "Wayfern.setFingerprint", fingerprint_params.clone())
-            .await
-          {
-            Ok(result) => {
-              log::info!(
-                "Successfully applied fingerprint to page target: {:?}",
-                result
-              );
-              // Wayfern.setFingerprint echoes back the fingerprint it actually
-              // used, which may be UPGRADED from what we sent (e.g. when the
-              // stored fingerprint targets an older browser version). Capture
-              // it once, from the first target that succeeds, so the caller can
-              // persist the upgraded value to the profile.
-              if used_fingerprint.is_none() {
-                // getFingerprint/setFingerprint wrap the object as
-                // { fingerprint: {...} }; tolerate a bare object too.
-                let fp = result.get("fingerprint").cloned().unwrap_or(result);
-                if fp.is_object() {
-                  match serde_json::to_string(&Self::normalize_fingerprint(fp)) {
-                    Ok(s) => used_fingerprint = Some(s),
-                    Err(e) => {
-                      log::warn!("Failed to serialize used fingerprint: {e}")
+        // The stored fingerprint should be the fingerprint object directly (after our fix in generate_fingerprint_config)
+        // But for backwards compatibility, also handle the wrapped format
+        let mut fingerprint = if stored_value.get("fingerprint").is_some() {
+          // Old format: {"fingerprint": {...}} - extract the inner fingerprint
+          stored_value.get("fingerprint").cloned().unwrap()
+        } else {
+          // New format: fingerprint object directly {...}
+          stored_value.clone()
+        };
+
+        // Add default timezone if not present (for profiles created before timezone was added)
+        if let Some(obj) = fingerprint.as_object_mut() {
+          if !obj.contains_key("timezone") {
+            obj.insert("timezone".to_string(), json!("America/New_York"));
+            log::info!("Added default timezone to fingerprint");
+          }
+          if !obj.contains_key("timezoneOffset") {
+            obj.insert("timezoneOffset".to_string(), json!(300));
+            log::info!("Added default timezoneOffset to fingerprint");
+          }
+        }
+
+        // Denormalize fingerprint for Wayfern CDP (convert arrays/objects to JSON strings)
+        let mut fingerprint_for_cdp = Self::denormalize_fingerprint(fingerprint);
+
+        #[cfg(target_os = "windows")]
+        {
+          Self::strip_windows_crash_prone_fingerprint_fields(&mut fingerprint_for_cdp);
+        }
+
+        // Normalize languages: if it's a comma-separated string, convert to array
+        if let Some(obj) = fingerprint_for_cdp.as_object_mut() {
+          if let Some(serde_json::Value::String(s)) = obj.get("languages").cloned() {
+            let arr: Vec<&str> = s.split(',').map(|l| l.trim()).collect();
+            obj.insert("languages".to_string(), json!(arr));
+          }
+        }
+
+        log::info!(
+          "Fingerprint prepared for CDP command, fields: {:?}",
+          fingerprint_for_cdp
+            .as_object()
+            .map(|o| o.keys().collect::<Vec<_>>())
+        );
+
+        // Log timezone and geolocation fields specifically for debugging
+        if let Some(obj) = fingerprint_for_cdp.as_object() {
+          log::info!(
+            "Timezone/Geolocation fields - timezone: {:?}, timezoneOffset: {:?}, latitude: {:?}, longitude: {:?}, language: {:?}, languages: {:?}",
+            obj.get("timezone"),
+            obj.get("timezoneOffset"),
+            obj.get("latitude"),
+            obj.get("longitude"),
+            obj.get("language"),
+            obj.get("languages")
+          );
+        }
+
+        // Include wayfern token if available (enables cross-OS fingerprinting for paid users)
+        // ponytail: local unlock — skip token (server-side signature verification
+        // rejects fakes). Fingerprint still applies, just without cross-OS upgrade.
+        let wayfern_token = if crate::cloud_auth::CLOUD_AUTH.is_local_unlock().await {
+          None
+        } else {
+          crate::cloud_auth::CLOUD_AUTH.get_wayfern_token().await
+        };
+        let mut fingerprint_params = fingerprint_for_cdp.clone();
+        if let Some(ref token) = wayfern_token {
+          if let Some(obj) = fingerprint_params.as_object_mut() {
+            obj.insert("wayfernToken".to_string(), json!(token));
+          }
+        }
+
+        for target in &page_targets {
+          if let Some(ws_url) = &target.websocket_debugger_url {
+            log::info!("Applying fingerprint to target via WebSocket: {}", ws_url);
+            match self
+              .send_cdp_command(ws_url, "Wayfern.setFingerprint", fingerprint_params.clone())
+              .await
+            {
+              Ok(result) => {
+                log::info!(
+                  "Successfully applied fingerprint to page target: {:?}",
+                  result
+                );
+                // Wayfern.setFingerprint echoes back the fingerprint it actually
+                // used, which may be UPGRADED from what we sent (e.g. when the
+                // stored fingerprint targets an older browser version). Capture
+                // it once, from the first target that succeeds, so the caller can
+                // persist the upgraded value to the profile.
+                if used_fingerprint.is_none() {
+                  // getFingerprint/setFingerprint wrap the object as
+                  // { fingerprint: {...} }; tolerate a bare object too.
+                  let fp = result.get("fingerprint").cloned().unwrap_or(result);
+                  if fp.is_object() {
+                    match serde_json::to_string(&Self::normalize_fingerprint(fp)) {
+                      Ok(s) => used_fingerprint = Some(s),
+                      Err(e) => {
+                        log::warn!("Failed to serialize used fingerprint: {e}")
+                      }
                     }
                   }
                 }
               }
+              Err(e) => log::error!("Failed to apply fingerprint to target: {e}"),
             }
-            Err(e) => log::error!("Failed to apply fingerprint to target: {e}"),
           }
         }
       }
@@ -1118,18 +1246,21 @@ impl WayfernManager {
 
     if let Some(url) = url {
       log::info!("Navigating to URL via CDP: {}", url);
-      if let Some(target) = page_targets.first() {
-        if let Some(ws_url) = &target.websocket_debugger_url {
-          if let Err(e) = self
-            .send_cdp_command(ws_url, "Page.navigate", json!({ "url": url }))
-            .await
-          {
-            log::error!("Failed to navigate to URL: {e}");
+      if startup_url != url {
+        if let Some(target) = page_targets.first() {
+          if let Some(ws_url) = &target.websocket_debugger_url {
+            if let Err(e) = self
+              .send_cdp_command(ws_url, "Page.navigate", json!({ "url": url }))
+              .await
+            {
+              log::error!("Failed to navigate to URL: {e}");
+            }
           }
         }
       }
     }
 
+    #[cfg(not(target_os = "windows"))]
     for target in &page_targets {
       if let Some(ws_url) = &target.websocket_debugger_url {
         let _ = self
@@ -1149,6 +1280,23 @@ impl WayfernManager {
             json!({ "media": "", "features": [] }),
           )
           .await;
+      }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+      tokio::time::sleep(Duration::from_secs(6)).await;
+      if let Some(pid) = process_id {
+        if !Self::is_process_running(pid) {
+          return Err(format!(
+            "Wayfern exited shortly after launch on Windows (pid {pid}); profile data may be corrupt"
+          )
+          .into());
+        }
+
+        self.get_cdp_targets(port).await.map_err(|e| {
+          format!("Wayfern CDP disappeared shortly after launch on Windows (pid {pid}): {e}")
+        })?;
       }
     }
 

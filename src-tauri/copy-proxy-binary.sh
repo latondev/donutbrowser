@@ -55,19 +55,20 @@ mkdir -p "$DEST_DIR"
 
 # Function to copy a binary
 copy_binary() {
-  local BIN_BASE_NAME="$1"
+  local SOURCE_BASE_NAME="$1"
+  local DEST_BASE_NAME="${2:-$1}"
 
   # Determine binary name based on target
   if [[ "$TARGET" == *"windows"* ]]; then
-    BIN_NAME="${BIN_BASE_NAME}.exe"
+    BIN_NAME="${SOURCE_BASE_NAME}.exe"
   else
-    BIN_NAME="$BIN_BASE_NAME"
+    BIN_NAME="$SOURCE_BASE_NAME"
   fi
 
   SOURCE="$SRC_DIR/$BIN_NAME"
 
   # Tauri expects the format: binary-{target} with hyphens
-  DEST_NAME="${BIN_BASE_NAME}-$TARGET"
+  DEST_NAME="${DEST_BASE_NAME}-$TARGET"
   if [[ "$TARGET" == *"windows"* ]]; then
     DEST_NAME="$DEST_NAME.exe"
   fi
@@ -79,9 +80,9 @@ copy_binary() {
     echo "Copied $BIN_NAME to $DEST"
   else
     echo "Warning: Binary not found at $SOURCE"
-    echo "Building $BIN_BASE_NAME binary..."
+    echo "Building $SOURCE_BASE_NAME binary..."
     cd "$MANIFEST_DIR"
-    BUILD_ARGS=("build" "--bin" "$BIN_BASE_NAME")
+    BUILD_ARGS=("build" "--bin" "$SOURCE_BASE_NAME")
     if [[ -n "$PROFILE" ]] && [[ "$PROFILE" == "release" ]]; then
       BUILD_ARGS+=("--release")
     fi
@@ -93,12 +94,12 @@ copy_binary() {
       cp "$SOURCE" "$DEST"
       echo "Built and copied $BIN_NAME to $DEST"
     else
-      echo "Error: Failed to build $BIN_BASE_NAME binary"
+      echo "Error: Failed to build $SOURCE_BASE_NAME binary"
       exit 1
     fi
   fi
 }
 
 # Copy donut-proxy binary
-copy_binary "donut-proxy"
+copy_binary "donut-proxy-worker" "donut-proxy"
 

@@ -959,15 +959,21 @@ impl ProfileImporter {
           // launch's signature-mismatch refresh verifies the location either way.
           Ok((fp, _geolocation_applied)) => config.fingerprint = Some(fp),
           Err(e) => {
-            let _ = fs::remove_dir_all(&new_profile_uuid_dir);
-            return Err(
-              serde_json::json!({
-                "code": "INTERNAL_ERROR",
-                "params": { "detail": format!("Failed to generate fingerprint for imported profile '{new_profile_name}': {e}") }
-              })
-              .to_string()
-              .into(),
-            );
+            if crate::wayfern_manager::WayfernManager::should_fallback_without_fingerprint(&*e) {
+              log::warn!(
+                "Wayfern fingerprint generation failed for imported profile {new_profile_name}; importing without a fingerprint on Windows fallback path: {e}"
+              );
+            } else {
+              let _ = fs::remove_dir_all(&new_profile_uuid_dir);
+              return Err(
+                serde_json::json!({
+                  "code": "INTERNAL_ERROR",
+                  "params": { "detail": format!("Failed to generate fingerprint for imported profile '{new_profile_name}': {e}") }
+                })
+                .to_string()
+                .into(),
+              );
+            }
           }
         }
       }
