@@ -459,7 +459,9 @@
       "hostPortRequired": "Sunucu ve bağlantı noktası zorunludur",
       "ssCipherRequired": "Shadowsocks için şifreleme algoritması ve parola zorunludur",
       "selectType": "Proxy türünü seçin",
-      "saveFailed": "Proxy kaydedilemedi: {{error}}"
+      "saveFailed": "Proxy kaydedilemedi: {{error}}",
+      "quickFill": "Hızlı doldur",
+      "quickFillPlaceholder": "host:port:username:password"
     },
     "types": {
       "http": "HTTP",

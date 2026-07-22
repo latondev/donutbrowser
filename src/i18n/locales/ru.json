@@ -459,7 +459,9 @@
       "hostPortRequired": "Требуются хост и порт",
       "ssCipherRequired": "Для Shadowsocks требуется шифр и пароль",
       "selectType": "Выберите тип прокси",
-      "saveFailed": "Не удалось сохранить прокси: {{error}}"
+      "saveFailed": "Не удалось сохранить прокси: {{error}}",
+      "quickFill": "Быстрое заполнение",
+      "quickFillPlaceholder": "host:port:username:password"
     },
     "types": {
       "http": "HTTP",

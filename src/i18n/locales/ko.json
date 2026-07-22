@@ -459,7 +459,9 @@
       "hostPortRequired": "호스트와 포트는 필수입니다",
       "ssCipherRequired": "Shadowsocks에는 암호화와 비밀번호가 필요합니다",
       "selectType": "프록시 유형 선택",
-      "saveFailed": "프록시 저장 실패: {{error}}"
+      "saveFailed": "프록시 저장 실패: {{error}}",
+      "quickFill": "빠른 채우기",
+      "quickFillPlaceholder": "host:port:username:password"
     },
     "types": {
       "http": "HTTP",

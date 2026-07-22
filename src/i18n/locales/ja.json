@@ -459,7 +459,9 @@
       "hostPortRequired": "ホストとポートが必要です",
       "ssCipherRequired": "Shadowsocks には暗号とパスワードが必要です",
       "selectType": "プロキシの種類を選択",
-      "saveFailed": "プロキシの保存に失敗しました: {{error}}"
+      "saveFailed": "プロキシの保存に失敗しました: {{error}}",
+      "quickFill": "クイック入力",
+      "quickFillPlaceholder": "host:port:username:password"
     },
     "types": {
       "http": "HTTP",

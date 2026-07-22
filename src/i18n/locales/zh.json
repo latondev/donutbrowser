@@ -459,7 +459,9 @@
       "hostPortRequired": "主机和端口为必填项",
       "ssCipherRequired": "Shadowsocks 需要密码学和密码",
       "selectType": "选择代理类型",
-      "saveFailed": "保存代理失败: {{error}}"
+      "saveFailed": "保存代理失败: {{error}}",
+      "quickFill": "快速填充",
+      "quickFillPlaceholder": "host:port:username:password"
     },
     "types": {
       "http": "HTTP",

@@ -459,7 +459,9 @@
       "hostPortRequired": "Host và cổng là bắt buộc",
       "ssCipherRequired": "Cipher và mật khẩu là bắt buộc cho Shadowsocks",
       "selectType": "Chọn loại proxy",
-      "saveFailed": "Lưu proxy thất bại: {{error}}"
+      "saveFailed": "Lưu proxy thất bại: {{error}}",
+      "quickFill": "Điền nhanh",
+      "quickFillPlaceholder": "host:port:username:password"
     },
     "types": {
       "http": "HTTP",

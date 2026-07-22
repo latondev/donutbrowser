@@ -144,6 +144,49 @@ export function ProxyFormDialog({
     }
   }, [isSubmitting, onClose]);
 
+  const handleQuickFill = useCallback((value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+
+    // URL format: protocol://user:pass@host:port
+    const urlMatch = trimmed.match(
+      /^(https?|socks[45]?|ss|shadowsocks):\/\/([^:]+):([^@]+)@([^:]+):(\d+)$/i,
+    );
+    if (urlMatch) {
+      const [, proto, user, pass, host, port] = urlMatch;
+      const proxyType = proto.toLowerCase().replace("shadowsocks", "ss");
+      setForm((prev) => ({
+        ...prev,
+        proxy_type: proxyType === "socks" ? "socks5" : proxyType,
+        host,
+        port: Number.parseInt(port, 10) || prev.port,
+        username: decodeURIComponent(user),
+        password: decodeURIComponent(pass),
+      }));
+      return;
+    }
+
+    // Colon-separated: host:port:user:pass or host:port
+    const parts = trimmed.split(":");
+    if (parts.length === 2) {
+      setForm((prev) => ({
+        ...prev,
+        host: parts[0],
+        port: Number.parseInt(parts[1], 10) || prev.port,
+        username: "",
+        password: "",
+      }));
+    } else if (parts.length === 4) {
+      setForm((prev) => ({
+        ...prev,
+        host: parts[0],
+        port: Number.parseInt(parts[1], 10) || prev.port,
+        username: parts[2],
+        password: parts[3],
+      }));
+    }
+  }, []);
+
   const isFormValid =
     form.name.trim() &&
     form.host.trim() &&
@@ -160,6 +203,22 @@ export function ProxyFormDialog({
             {editingProxy ? t("proxies.edit") : t("proxies.add")}
           </DialogTitle>
         </DialogHeader>
+
+        {!editingProxy && (
+          <div className="grid gap-2">
+            <Label htmlFor="proxy-quick-fill">
+              {t("proxies.form.quickFill")}
+            </Label>
+            <Input
+              id="proxy-quick-fill"
+              onChange={(e) => {
+                handleQuickFill(e.target.value);
+              }}
+              placeholder={t("proxies.form.quickFillPlaceholder")}
+              disabled={isSubmitting}
+            />
+          </div>
+        )}
 
         <div className="@container grid gap-4 py-4">
           <div className="grid gap-2">

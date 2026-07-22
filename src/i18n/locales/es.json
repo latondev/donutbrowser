@@ -459,7 +459,9 @@
       "hostPortRequired": "Host y puerto son obligatorios",
       "ssCipherRequired": "Para Shadowsocks se requieren cifrado y contraseña",
       "selectType": "Selecciona el tipo de proxy",
-      "saveFailed": "Error al guardar el proxy: {{error}}"
+      "saveFailed": "Error al guardar el proxy: {{error}}",
+      "quickFill": "Rellenar rápido",
+      "quickFillPlaceholder": "host:puerto:usuario:contraseña"
     },
     "types": {
       "http": "HTTP",
