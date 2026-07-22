@@ -15,7 +15,7 @@ static PENDING_URLS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
 
 mod api_client;
-mod api_server;
+pub mod api_server;
 mod app_auto_updater;
 pub mod app_dirs;
 mod auto_updater;
@@ -42,7 +42,7 @@ mod proxy_manager;
 pub mod proxy_runner;
 pub mod proxy_server;
 pub mod proxy_storage;
-mod settings_manager;
+pub mod settings_manager;
 pub mod socks5_local;
 pub mod sync;
 mod synchronizer;

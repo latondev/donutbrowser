@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Donut Browser API Tester</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 20px; }
+  h1 { color: #00d4ff; margin-bottom: 20px; font-size: 24px; }
+  .config { background: #16213e; padding: 20px; border-radius: 8px; margin-bottom: 20px; display: flex; gap: 15px; flex-wrap: wrap; align-items: end; }
+  .config label { display: block; font-size: 13px; color: #a0a0b0; margin-bottom: 5px; }
+  .config input { background: #0f3460; border: 1px solid #1a4a7a; color: #fff; padding: 8px 12px; border-radius: 4px; font-size: 14px; width: 350px; }
+  .config input:focus { outline: none; border-color: #00d4ff; }
+  .btn-test-all { background: #e94560; }
+  .btn-test-all:hover { background: #ff6b81; }
+  .section { background: #16213e; padding: 20px; border-radius: 8px; margin-bottom: 15px; }
+  .section h2 { color: #00d4ff; font-size: 16px; margin-bottom: 15px; border-bottom: 1px solid #0f3460; padding-bottom: 8px; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 15px; }
+  button { background: #0f3460; color: #e0e0e0; border: 1px solid #1a4a7a; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 13px; transition: all 0.2s; }
+  button:hover { background: #1a4a7a; border-color: #00d4ff; }
+  button:active { transform: scale(0.97); }
+  button.green { background: #0a5e2a; border-color: #0a7e3a; }
+  button.green:hover { background: #0a7e3a; }
+  button.red { background: #8b0000; border-color: #ab0000; }
+  button.red:hover { background: #ab0000; }
+  button.blue { background: #0d2a5e; border-color: #1d4a8e; }
+  button.blue:hover { background: #1d4a8e; }
+  .result { background: #0d1117; border: 1px solid #1a4a7a; border-radius: 4px; padding: 12px; font-family: 'Consolas', monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; }
+  .result.pass { border-left: 4px solid #0a5e2a; }
+  .result.fail { border-left: 4px solid #8b0000; }
+  .status { font-weight: bold; }
+  .status.ok { color: #0a7e3a; }
+  .status.err { color: #e94560; }
+  .summary { background: #0f3460; padding: 15px; border-radius: 8px; margin-bottom: 20px; font-size: 14px; }
+  .summary .pass { color: #0a7e3a; font-weight: bold; }
+  .summary .fail { color: #e94560; font-weight: bold; }
+  .input-group { display: flex; gap: 10px; margin-bottom: 10px; align-items: center; }
+  .input-group label { font-size: 13px; color: #a0a0b0; min-width: 100px; }
+  .input-group input { background: #0d1117; border: 1px solid #1a4a7a; color: #fff; padding: 6px 10px; border-radius: 4px; font-size: 13px; flex: 1; }
+  .input-group textarea { background: #0d1117; border: 1px solid #1a4a7a; color: #fff; padding: 6px 10px; border-radius: 4px; font-size: 13px; flex: 1; min-height: 60px; font-family: monospace; }
+</style>
+</head>
+<body>
+
+<h1>🍩 Donut Browser — API Tester</h1>
+
+<!-- Config -->
+<div class="config">
+  <div>
+    <label>API URL</label>
+    <input type="text" id="apiUrl" value="http://127.0.0.1:10108" />
+  </div>
+  <div>
+    <label>API Token</label>
+    <input type="text" id="apiToken" value="vgQJ3XJn0THiCUj-NQeCwsw0_mky1fmz54x7sj_bFeg" />
+  </div>
+  <div>
+    <button class="btn-test-all" onclick="testAll()">🚀 Chạy Tất Cả</button>
+  </div>
+</div>
+
+<!-- Summary -->
+<div class="summary" id="summary" style="display:none;">
+  Kết quả: <span class="pass" id="passCount">0</span> pass, <span class="fail" id="failCount">0</span> fail
+</div>
+
+<!-- ===================== AUTH ===================== -->
+<div class="section">
+  <h2>🔐 Auth Middleware</h2>
+  <div class="buttons">
+    <button onclick="testNoToken()">Không có token → 401</button>
+    <button onclick="testWrongToken()">Token sai → 401</button>
+    <button onclick="testValidToken()">Token đúng → 200</button>
+  </div>
+  <div id="result-auth"></div>
+</div>
+
+<!-- ===================== PROFILES ===================== -->
+<div class="section">
+  <h2>👤 Profiles</h2>
+  <div class="buttons">
+    <button class="green" onclick="getList('/v1/profiles')">Danh sách profiles</button>
+    <button class="green" onclick="get404('/v1/profiles/00000000-0000-0000-0000-000000000000')">Get ID không tồn tại → 404</button>
+    <button class="green" onclick="profileCreate()">Tạo profile mới</button>
+    <button class="blue" onclick="profileGetById()">Get profile theo ID</button>
+    <button class="blue" onclick="profileUpdate()">Update profile (đổi tên)</button>
+    <button class="red" onclick="profileDelete()">Xóa profile</button>
+    <button class="red" onclick="createProfileBadBrowser()">Tạo profile browser sai → 400</button>
+    <button class="red" onclick="createProfileBadBody()">Tạo profile body sai → 4xx</button>
+  </div>
+  <div id="result-profiles"></div>
+</div>
+
+<!-- ===================== GROUPS ===================== -->
+<div class="section">
+  <h2>📁 Groups — CRUD Lifecycle</h2>
+  <div class="buttons">
+    <button class="green" onclick="getList('/v1/groups')">Danh sách groups</button>
+    <button class="green" onclick="groupCreate()">Tạo group mới</button>
+    <button class="blue" onclick="groupGetById()">Get group theo ID</button>
+    <button class="blue" onclick="groupUpdate()">Đổi tên group</button>
+    <button class="red" onclick="groupDupName()">Trùng tên → 400</button>
+    <button class="red" onclick="groupDelete()">Xóa group</button>
+  </div>
+  <div id="result-groups"></div>
+</div>
+
+<!-- ===================== PROXIES ===================== -->
+<div class="section">
+  <h2>🌐 Proxies — CRUD + Import</h2>
+  <div class="buttons">
+    <button class="green" onclick="getList('/v1/proxies')">Danh sách proxies</button>
+    <button class="green" onclick="proxyCreate()">Tạo proxy mới</button>
+    <button class="blue" onclick="proxyGetById()">Get proxy theo ID</button>
+    <button class="blue" onclick="proxyUpdate()">Update proxy</button>
+    <button class="red" onclick="proxyDelete()">Xóa proxy</button>
+  </div>
+  <div class="buttons">
+    <button class="green" onclick="proxyImport()">Import TXT (2 proxy)</button>
+    <button class="red" onclick="proxyImportBadFormat()">Import format sai → 400</button>
+  </div>
+  <div id="result-proxies"></div>
+</div>
+
+<!-- ===================== TAGS ===================== -->
+<div class="section">
+  <h2>🏷️ Tags</h2>
+  <div class="buttons">
+    <button class="green" onclick="getList('/v1/tags')">Danh sách tags</button>
+  </div>
+  <div id="result-tags"></div>
+</div>
+
+<!-- ===================== VPNs ===================== -->
+<div class="section">
+  <h2>🔒 VPNs</h2>
+  <div class="buttons">
+    <button class="green" onclick="getList('/v1/vpns')">Danh sách VPNs</button>
+    <button class="red" onclick="get404('/v1/vpns/does-not-exist')">Get VPN không tồn tại → 404</button>
+  </div>
+  <div id="result-vpns"></div>
+</div>
+
+<!-- ===================== EXTENSIONS ===================== -->
+<div class="section">
+  <h2>🧩 Extensions</h2>
+  <div class="buttons">
+    <button class="green" onclick="getList('/v1/extensions')">Danh sách extensions</button>
+    <button class="green" onclick="getList('/v1/extension-groups')">Danh sách extension groups</button>
+    <button class="red" onclick="delete404('/v1/extensions/does-not-exist')">Xóa extension không tồn tại → 4xx</button>
+  </div>
+  <div id="result-extensions"></div>
+</div>
+
+<!-- ===================== OPENAPI ===================== -->
+<div class="section">
+  <h2>📜 OpenAPI Spec</h2>
+  <div class="buttons">
+    <button class="green" onclick="getOpenapi()">GET /openapi.json (có auth)</button>
+    <button class="green" onclick="getOpenapiNoAuth()">GET /openapi.json (không auth)</button>
+  </div>
+  <div id="result-openapi"></div>
+</div>
+
+<script>
+let passCount = 0;
+let failCount = 0;
+let createdGroupId = null;
+let createdProxyId = null;
+
+// ===== Core helpers =====
+
+function getUrl() { return document.getElementById('apiUrl').value.trim().replace(/\/$/, ''); }
+function getToken() { return document.getElementById('apiToken').value.trim(); }
+
+function authHeaders() {
+  return { 'Authorization': 'Bearer ' + getToken(), 'Content-Type': 'application/json' };
+}
+
+async function api(method, path, body, useAuth = true) {
+  const opts = { method, headers: {} };
+  if (useAuth) { opts.headers['Authorization'] = 'Bearer ' + getToken(); }
+  if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  try {
+    const resp = await fetch(getUrl() + path, opts);
+    const text = await resp.text();
+    let parsed;
+    try { parsed = JSON.parse(text); } catch { parsed = text; }
+    return { status: resp.status, ok: resp.ok, body: parsed };
+  } catch (e) {
+    return { status: 0, ok: false, body: String(e), error: true };
+  }
+}
+
+function showResult(divId, label, result, expectedStatus) {
+  const div = document.getElementById(divId);
+  const statusClass = result.ok ? 'ok' : 'err';
+  const passClass = (expectedStatus && result.status === expectedStatus) ? 'pass' :
+                    (!expectedStatus && result.ok) ? 'pass' : 'fail';
+  const statusText = result.status === 0 ? 'CONNECTION ERROR' : result.status;
+  const bodyStr = typeof result.body === 'string' ? result.body : JSON.stringify(result.body, null, 2);
+
+  div.innerHTML = `<div class="result ${passClass}">
+    <span class="status ${statusClass}">[${statusText}]</span> ${label}
+    ${expectedStatus ? `(expect ${expectedStatus})` : ''}
+    ${result.status === expectedStatus || (!expectedStatus && result.ok) ? ' ✅' : ' ❌'}
+    \n${bodyStr.substring(0, 2000)}
+  </div>`;
+}
+
+function recordResult(label, result, expectedStatus) {
+  const passed = (expectedStatus && result.status === expectedStatus) ||
+                 (!expectedStatus && result.ok);
+  if (passed) { passCount++; } else { failCount++; }
+  updateSummary();
+  return passed;
+}
+
+function updateSummary() {
+  document.getElementById('summary').style.display = 'block';
+  document.getElementById('passCount').textContent = passCount;
+  document.getElementById('failCount').textContent = failCount;
+}
+
+function resetCounters() {
+  passCount = 0; failCount = 0;
+  updateSummary();
+  // Clear all result divs
+  document.querySelectorAll('.result').forEach(d => d.innerHTML = '');
+  createdGroupId = null;
+  createdProxyId = null;
+}
+
+// ===== AUTH tests =====
+
+async function testNoToken() {
+  const r = await api('GET', '/v1/profiles', null, false);
+  showResult('result-auth', 'Không có token', r, 401);
+  recordResult('No token → 401', r, 401);
+}
+
+async function testWrongToken() {
+  const r = await api('GET', '/v1/profiles', null, false);
+  // Manually set wrong token
+  const resp = await fetch(getUrl() + '/v1/profiles', {
+    headers: { 'Authorization': 'Bearer wrong-token-xxx' }
+  });
+  const text = await resp.text();
+  const result = { status: resp.status, ok: resp.ok, body: text };
+  showResult('result-auth', 'Token sai', result, 401);
+  recordResult('Wrong token → 401', result, 401);
+}
+
+async function testValidToken() {
+  const r = await api('GET', '/v1/profiles');
+  showResult('result-auth', 'Token đúng', r, 200);
+  recordResult('Valid token → 200', r, 200);
+}
+
+// ===== Generic list =====
+
+async function getList(path) {
+  const divId = 'result-' + path.split('/').pop().replace(/-/g, '');
+  const r = await api('GET', path);
+  showResult(divId, 'GET ' + path, r, 200);
+  recordResult('GET ' + path, r, 200);
+}
+
+async function get404(path) {
+  const divId = path.includes('profile') ? 'result-profiles' :
+                path.includes('vpn') ? 'result-vpns' : 'result-profiles';
+  const r = await api('GET', path);
+  showResult(divId, 'GET ' + path, r, 404);
+  recordResult('GET ' + path + ' → 404', r, 404);
+}
+
+async function delete404(path) {
+  const r = await api('DELETE', path);
+  showResult('result-extensions', 'DELETE ' + path, r);
+  recordResult('DELETE ' + path + ' → 4xx', r);
+}
+
+// ===== Profiles =====
+
+let createdProfileId = null;
+
+async function profileCreate() {
+  const r = await api('POST', '/v1/profiles', { name: 'TestProfile_' + Date.now(), browser: 'wayfern' });
+  showResult('result-profiles', 'Tạo profile', r, 200);
+  recordResult('Create profile → 200', r, 200);
+  if (r.ok && r.body.profile && r.body.profile.id) createdProfileId = r.body.profile.id;
+}
+
+async function profileGetById() {
+  if (!createdProfileId) { showResult('result-profiles', 'Cần tạo profile trước!', { status: 0, ok: false, body: 'No profile created yet' }); return; }
+  const r = await api('GET', '/v1/profiles/' + createdProfileId);
+  showResult('result-profiles', 'Get profile', r, 200);
+  recordResult('Get profile by ID → 200', r, 200);
+}
+
+async function profileUpdate() {
+  if (!createdProfileId) { showResult('result-profiles', 'Cần tạo profile trước!', { status: 0, ok: false, body: 'No profile created yet' }); return; }
+  const r = await api('PUT', '/v1/profiles/' + createdProfileId, { name: 'RenamedProfile_' + Date.now() });
+  showResult('result-profiles', 'Update profile', r, 200);
+  recordResult('Update profile → 200', r, 200);
+}
+
+async function profileDelete() {
+  if (!createdProfileId) { showResult('result-profiles', 'Cần tạo profile trước!', { status: 0, ok: false, body: 'No profile created yet' }); return; }
+  const r = await api('DELETE', '/v1/profiles/' + createdProfileId);
+  showResult('result-profiles', 'Xóa profile', r, 204);
+  recordResult('Delete profile → 204', r, 204);
+  if (r.status === 204) createdProfileId = null;
+}
+
+async function createProfileBadBrowser() {
+  const r = await api('POST', '/v1/profiles', { name: 'test', browser: 'chromium' });
+  showResult('result-profiles', 'Tạo profile browser=chromium', r, 400);
+  recordResult('Create profile bad browser → 400', r, 400);
+}
+
+async function createProfileBadBody() {
+  const r = await api('POST', '/v1/profiles', { proxy_id: 'nope' });
+  showResult('result-profiles', 'Tạo profile body sai', r);
+  recordResult('Create profile bad body → 4xx', r);
+}
+
+// ===== Groups CRUD =====
+
+async function groupCreate() {
+  const r = await api('POST', '/v1/groups', { name: 'TestGroup_' + Date.now() });
+  showResult('result-groups', 'Tạo group', r, 200);
+  recordResult('Create group → 200', r, 200);
+  if (r.ok && r.body.id) createdGroupId = r.body.id;
+}
+
+async function groupGetById() {
+  if (!createdGroupId) { showResult('result-groups', 'Cần tạo group trước!', { status: 0, ok: false, body: 'No group created yet' }); return; }
+  const r = await api('GET', '/v1/groups/' + createdGroupId);
+  showResult('result-groups', 'Get group ' + createdGroupId, r, 200);
+  recordResult('Get group by ID → 200', r, 200);
+}
+
+async function groupUpdate() {
+  if (!createdGroupId) { showResult('result-groups', 'Cần tạo group trước!', { status: 0, ok: false, body: 'No group created yet' }); return; }
+  const r = await api('PUT', '/v1/groups/' + createdGroupId, { name: 'RenamedGroup_' + Date.now() });
+  showResult('result-groups', 'Update group', r, 200);
+  recordResult('Update group → 200', r, 200);
+}
+
+async function groupDupName() {
+  const name = 'DupGroup_' + Date.now();
+  await api('POST', '/v1/groups', { name });
+  const r = await api('POST', '/v1/groups', { name });
+  showResult('result-groups', 'Trùng tên group', r, 400);
+  recordResult('Duplicate group name → 400', r, 400);
+}
+
+async function groupDelete() {
+  if (!createdGroupId) { showResult('result-groups', 'Cần tạo group trước!', { status: 0, ok: false, body: 'No group created yet' }); return; }
+  const r = await api('DELETE', '/v1/groups/' + createdGroupId);
+  showResult('result-groups', 'Xóa group', r, 204);
+  recordResult('Delete group → 204', r, 204);
+  if (r.status === 204) createdGroupId = null;
+}
+
+// ===== Proxies CRUD =====
+
+async function proxyCreate() {
+  const r = await api('POST', '/v1/proxies', {
+    name: 'TestProxy_' + Date.now(),
+    proxy_settings: { proxy_type: 'socks5', host: '127.0.0.1', port: 1080, username: null, password: null }
+  });
+  showResult('result-proxies', 'Tạo proxy', r, 200);
+  recordResult('Create proxy → 200', r, 200);
+  if (r.ok && r.body.id) createdProxyId = r.body.id;
+}
+
+async function proxyGetById() {
+  if (!createdProxyId) { showResult('result-proxies', 'Cần tạo proxy trước!', { status: 0, ok: false, body: 'No proxy created yet' }); return; }
+  const r = await api('GET', '/v1/proxies/' + createdProxyId);
+  showResult('result-proxies', 'Get proxy', r, 200);
+  recordResult('Get proxy by ID → 200', r, 200);
+}
+
+async function proxyUpdate() {
+  if (!createdProxyId) { showResult('result-proxies', 'Cần tạo proxy trước!', { status: 0, ok: false, body: 'No proxy created yet' }); return; }
+  const r = await api('PUT', '/v1/proxies/' + createdProxyId, {
+    name: 'RenamedProxy_' + Date.now(),
+    proxy_settings: { proxy_type: 'http', host: '10.0.0.1', port: 8080, username: 'u', password: 'p' }
+  });
+  showResult('result-proxies', 'Update proxy', r, 200);
+  recordResult('Update proxy → 200', r, 200);
+}
+
+async function proxyDelete() {
+  if (!createdProxyId) { showResult('result-proxies', 'Cần tạo proxy trước!', { status: 0, ok: false, body: 'No proxy created yet' }); return; }
+  const r = await api('DELETE', '/v1/proxies/' + createdProxyId);
+  showResult('result-proxies', 'Xóa proxy', r, 204);
+  recordResult('Delete proxy → 204', r, 204);
+  if (r.status === 204) createdProxyId = null;
+}
+
+async function proxyImport() {
+  const r = await api('POST', '/v1/proxies/import', {
+    format: 'txt',
+    content: '127.0.0.1:1080:u:p\n10.0.0.1:8080\n',
+    name_prefix: 'Imported-'
+  });
+  showResult('result-proxies', 'Import 2 proxy TXT', r, 200);
+  recordResult('Import proxies TXT → 200', r, 200);
+}
+
+async function proxyImportBadFormat() {
+  const r = await api('POST', '/v1/proxies/import', { format: 'csv', content: 'anything' });
+  showResult('result-proxies', 'Import format sai', r, 400);
+  recordResult('Import bad format → 400', r, 400);
+}
+
+// ===== OpenAPI =====
+
+async function getOpenapi() {
+  const r = await api('GET', '/openapi.json');
+  const hasPaths = r.ok && r.body && r.body.paths && r.body.paths['/v1/profiles'];
+  showResult('result-openapi', 'GET /openapi.json (auth)', r, 200);
+  recordResult('OpenAPI spec served', r, 200);
+}
+
+async function getOpenapiNoAuth() {
+  const r = await api('GET', '/openapi.json', null, false);
+  showResult('result-openapi', 'GET /openapi.json (no auth)', r, 200);
+  recordResult('OpenAPI no auth → 200', r, 200);
+}
+
+// ===== Test All =====
+
+async function testAll() {
+  resetCounters();
+
+  // Auth
+  await testNoToken();
+  await testWrongToken();
+  await testValidToken();
+
+  // Profiles
+  await getList('/v1/profiles');
+  await profileCreate();
+  await profileGetById();
+  await profileUpdate();
+  await profileDelete();
+  await get404('/v1/profiles/00000000-0000-0000-0000-000000000000');
+  await createProfileBadBrowser();
+  await createProfileBadBody();
+
+  // Groups
+  await getList('/v1/groups');
+  await groupCreate();
+  await groupGetById();
+  await groupUpdate();
+  await groupDupName();
+  await groupDelete();
+
+  // Proxies
+  await getList('/v1/proxies');
+  await proxyCreate();
+  await proxyGetById();
+  await proxyUpdate();
+  await proxyImport();
+  await proxyImportBadFormat();
+  await proxyDelete();
+
+  // Tags
+  await getList('/v1/tags');
+
+  // VPNs
+  await getList('/v1/vpns');
+  await get404('/v1/vpns/does-not-exist');
+
+  // Extensions
+  await getList('/v1/extensions');
+  await getList('/v1/extension-groups');
+  await delete404('/v1/extensions/does-not-exist');
+
+  // OpenAPI
+  await getOpenapi();
+  await getOpenapiNoAuth();
+
+  // Scroll to summary
+  document.getElementById('summary').scrollIntoView({ behavior: 'smooth' });
+}
+</script>
+
+</body>
+</html>

@@ -160,6 +160,10 @@ path = "tests/sync_e2e.rs"
 name = "vpn_integration"
 path = "tests/vpn_integration.rs"
 
+[[test]]
+name = "api_server_integration"
+path = "tests/api_server_integration.rs"
+
 [profile.dev]
 codegen-units = 256
 incremental = true

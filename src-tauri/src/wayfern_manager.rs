@@ -771,38 +771,49 @@ impl WayfernManager {
             cookie_count
           );
 
-          // Try decrypting one cookie using the cookie_manager
-          if let Some(encryption_key) =
-            crate::cookie_manager::chrome_decrypt::get_encryption_key(&profile_path_buf)
-          {
-            if let Ok(mut stmt) = conn.prepare(
-              "SELECT name, host_key, encrypted_value FROM cookies WHERE length(encrypted_value) > 0 LIMIT 1",
-            ) {
-              if let Ok(mut rows) = stmt.query([]) {
-                if let Ok(Some(row)) = rows.next() {
-                  let name: String = row.get(0).unwrap_or_default();
-                  let host: String = row.get(1).unwrap_or_default();
-                  let encrypted: Vec<u8> = row.get(2).unwrap_or_default();
-                  let decrypted = crate::cookie_manager::chrome_decrypt::decrypt(
-                    &encrypted,
-                    &host,
-                    &encryption_key,
-                  );
-                  match decrypted {
-                    Some(val) => log::info!(
-                      "Pre-launch: Cookie decryption SUCCEEDED for '{}' (host: {}, decrypted {} bytes)",
-                      name, host, val.len()
-                    ),
-                    None => log::error!(
-                      "Pre-launch: Cookie decryption FAILED for '{}' (host: {}, encrypted {} bytes)",
-                      name, host, encrypted.len()
-                    ),
+          // Only attempt decryption when there are encrypted cookies to test
+          // against. A fresh profile has no os_crypt_key yet (Chromium creates
+          // it lazily on first encrypted write) and no encrypted cookies, so
+          // the absence of a key there is normal — logging it as an error
+          // surfaced a spurious bug that only appeared after Camoufox (which
+          // pre-seeded the key) was deprecated. Only complain when we actually
+          // have an encrypted cookie we can't decrypt.
+          if cookie_count > 0 {
+            if let Some(encryption_key) =
+              crate::cookie_manager::chrome_decrypt::get_encryption_key(&profile_path_buf)
+            {
+              if let Ok(mut stmt) = conn.prepare(
+                "SELECT name, host_key, encrypted_value FROM cookies WHERE length(encrypted_value) > 0 LIMIT 1",
+              ) {
+                if let Ok(mut rows) = stmt.query([]) {
+                  if let Ok(Some(row)) = rows.next() {
+                    let name: String = row.get(0).unwrap_or_default();
+                    let host: String = row.get(1).unwrap_or_default();
+                    let encrypted: Vec<u8> = row.get(2).unwrap_or_default();
+                    let decrypted = crate::cookie_manager::chrome_decrypt::decrypt(
+                      &encrypted,
+                      &host,
+                      &encryption_key,
+                    );
+                    match decrypted {
+                      Some(val) => log::info!(
+                        "Pre-launch: Cookie decryption SUCCEEDED for '{}' (host: {}, decrypted {} bytes)",
+                        name, host, val.len()
+                      ),
+                      None => log::error!(
+                        "Pre-launch: Cookie decryption FAILED for '{}' (host: {}, encrypted {} bytes)",
+                        name, host, encrypted.len()
+                      ),
+                    }
                   }
                 }
               }
+            } else {
+              log::warn!(
+                "Pre-launch: {} encrypted cookies present but os_crypt_key missing or empty — decryption will fail",
+                cookie_count
+              );
             }
-          } else {
-            log::error!("Pre-launch: Failed to derive encryption key from os_crypt_key");
           }
         }
       } else {
